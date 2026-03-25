@@ -106,7 +106,7 @@ export function parseKalshiCryptoTicker(ticker: string): {
     strike: parseInt(match[4]),
     dateStr: match[2],
     contractType,
-    bracketWidth: contractType === 'BRACKET' ? 250 : 0, // Kalshi uses $250 ranges
+    bracketWidth: contractType === 'BRACKET' ? 500 : 0, // Kalshi BTC/ETH uses $500 brackets
   };
 }
 
@@ -167,4 +167,41 @@ export function calculateSpotImpliedProb(
 
   // Clamp to avoid 0/1 extremes (always some uncertainty)
   return Math.max(0.01, Math.min(0.99, prob));
+}
+
+/**
+ * Calculate implied probability for a BRACKET contract.
+ * "Will BTC be between $69,000 and $69,250 at resolution?"
+ *
+ * P(bracket) = N(d_upper) - N(d_lower)
+ *   where d = ln(spot/strike) / (vol * sqrt(T))
+ *
+ * For a $250 bracket on BTC (~$70K), the bracket width is ~0.36% of price.
+ * With hourly vol of 0.6%, a bracket centered on spot has ~30% probability at 1 hour.
+ * Off-center brackets drop off rapidly.
+ */
+export function calculateBracketImpliedProb(
+  spotPrice: number,
+  bracketLow: number,
+  bracketWidth: number,
+  hoursToResolution: number
+): number {
+  if (hoursToResolution <= 0) {
+    // Already resolved: spot in bracket = 1, else 0
+    return (spotPrice >= bracketLow && spotPrice < bracketLow + bracketWidth) ? 1 : 0;
+  }
+
+  const effectiveHours = Math.max(hoursToResolution, 1 / 60);
+  const baseHourlyVol = 0.006;
+  const sigma = baseHourlyVol * Math.sqrt(effectiveHours);
+
+  const bracketHigh = bracketLow + bracketWidth;
+
+  // P(spot ends above bracketLow) - P(spot ends above bracketHigh)
+  const dLow = Math.log(spotPrice / bracketLow) / sigma;
+  const dHigh = Math.log(spotPrice / bracketHigh) / sigma;
+
+  const prob = normalCDF(dLow) - normalCDF(dHigh);
+
+  return Math.max(0.001, Math.min(0.99, prob));
 }

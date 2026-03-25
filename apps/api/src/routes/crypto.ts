@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '../lib/prisma';
-import { getCryptoPrices, parseKalshiCryptoTicker, calculateSpotImpliedProb } from '../services/crypto-price';
+import { getCryptoPrices, parseKalshiCryptoTicker, calculateSpotImpliedProb, calculateBracketImpliedProb } from '../services/crypto-price';
 import { calculateKalshiFee } from '../services/fee-calculator';
 
 // Moneyness thresholds
@@ -87,12 +87,16 @@ export default async function cryptoRoutes(fastify: FastifyInstance) {
             const feePerContract = fee / 10;
             edgeAfterFees = Math.max(0, rawEdge - feePerContract);
           }
-        } else if (contractType === 'BRACKET') {
-          // For bracket contracts: implied prob = P(spot in [strike, strike+250])
-          // Much lower probability, their low prices are correct
-          impliedProb = null; // Don't calculate — different model needed
-          rawEdge = null;
-          edgeAfterFees = null;
+        } else if (contractType === 'BRACKET' && parsed.bracketWidth > 0) {
+          // Bracket: P(spot in [strike, strike + width]) using normal CDF difference
+          impliedProb = calculateBracketImpliedProb(spotPrice, parsed.strike, parsed.bracketWidth, hoursToRes);
+
+          if (marketPrice > 0 && impliedProb !== null) {
+            rawEdge = Math.abs(impliedProb - marketPrice);
+            const fee = calculateKalshiFee(marketPrice, 10);
+            const feePerContract = fee / 10;
+            edgeAfterFees = Math.max(0, rawEdge - feePerContract);
+          }
         }
       }
 
@@ -134,8 +138,11 @@ export default async function cryptoRoutes(fastify: FastifyInstance) {
           reasoning: cryptexSignal.reasoning,
         } : null,
         volume: m.volume,
-        // Only FLOOR contracts can be tradeable — bracket edges need separate model
-        tradeable: contractType === 'FLOOR' && moneyness === 'ATM' && (m.volume ?? 0) >= MIN_VOLUME && (edgeAfterFees ?? 0) >= MIN_EDGE_AFTER_FEES,
+        // Tradeable: FLOOR ATM or BRACKET near spot, with volume and edge
+        tradeable: (
+          (contractType === 'FLOOR' && moneyness === 'ATM') ||
+          (contractType === 'BRACKET' && Math.abs(distanceFromStrike ?? 1) < ATM_THRESHOLD)
+        ) && (m.volume ?? 0) >= MIN_VOLUME && (edgeAfterFees ?? 0) >= MIN_EDGE_AFTER_FEES,
       };
     })
     // Filter out contracts expiring in < 5 minutes — untradeable
