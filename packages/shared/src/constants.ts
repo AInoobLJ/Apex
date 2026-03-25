@@ -47,4 +47,8 @@ export const JOB_SCHEDULES = {
   GRAPH_REBUILD: 6 * 60 * 60 * 1000,
   CONSISTENCY_CHECK: 15 * 60 * 1000,
   ARB_SCAN: 60 * 1000, // every 60 seconds — arb-sensitive
+  CRYPTO_STRATEGY: 30 * 1000, // every 30 seconds — short-duration crypto markets
+  DAILY_DIGEST: '0 13 * * *', // 8 AM ET = 13:00 UTC (cron, not ms)
+  DATA_RETENTION: 24 * 60 * 60 * 1000, // daily cleanup
+  WEIGHT_UPDATE: 60 * 60 * 1000, // hourly module weight recalculation
 } as const;

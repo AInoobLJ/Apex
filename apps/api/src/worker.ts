@@ -94,6 +94,7 @@ async function main() {
       await workers.ingestionWorker.close();
       await workers.analysisWorker.close();
       await workers.arbWorker.close();
+      await workers.maintenanceWorker.close();
     } catch { /* ignore close errors */ }
     await syncPrisma.$disconnect();
     redis.disconnect();

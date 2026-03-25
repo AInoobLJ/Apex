@@ -5,6 +5,10 @@ import { handleMarketSync } from './market-sync.job';
 import { handleOrderBookSync } from './orderbook-sync.job';
 import { handleSignalPipeline } from './signal-pipeline.job';
 import { handleArbScan } from './arb-scan.job';
+import { handleNewsIngest } from './news-ingest.job';
+import { handleDailyDigest } from './daily-digest.job';
+import { handleDataRetention } from './data-retention.job';
+import { handleWeightUpdate } from './weight-update.job';
 
 /**
  * Wrap any job handler in try/catch so a single job failure
@@ -33,6 +37,8 @@ export function startWorkers() {
           return safeHandler('market-sync', handleMarketSync)(job);
         case 'orderbook-sync':
           return safeHandler('orderbook-sync', handleOrderBookSync)(job);
+        case 'news-ingest':
+          return safeHandler('news-ingest', handleNewsIngest)(job);
         default:
           logger.warn({ jobName: job.name }, 'Unknown ingestion job');
       }
@@ -81,11 +87,34 @@ export function startWorkers() {
     }
   );
 
-  // Worker-level error handlers (catches BullMQ internal errors)
+  const maintenanceWorker = new Worker(
+    'maintenance',
+    async (job) => {
+      switch (job.name) {
+        case 'daily-digest':
+          return safeHandler('daily-digest', handleDailyDigest)(job);
+        case 'data-retention':
+          return safeHandler('data-retention', handleDataRetention)(job);
+        case 'weight-update':
+          return safeHandler('weight-update', handleWeightUpdate)(job);
+        default:
+          logger.warn({ jobName: job.name }, 'Unknown maintenance job');
+      }
+    },
+    {
+      connection: bullmqConnection,
+      concurrency: 1,
+      lockDuration: 300000,
+      stalledInterval: 120000,
+    }
+  );
+
+  // Worker-level error handlers
   for (const [name, worker] of [
     ['ingestion', ingestionWorker],
     ['analysis', analysisWorker],
     ['arb-scan', arbWorker],
+    ['maintenance', maintenanceWorker],
   ] as const) {
     worker.on('failed', (job, err) => {
       logger.error({ jobId: job?.id, jobName: job?.name, err: err.message }, `${name} job failed`);
@@ -95,7 +124,7 @@ export function startWorkers() {
     });
   }
 
-  logger.info('BullMQ workers started (with safe error handling)');
+  logger.info('BullMQ workers started: ingestion, analysis, arb-scan, maintenance');
 
-  return { ingestionWorker, analysisWorker, arbWorker };
+  return { ingestionWorker, analysisWorker, arbWorker, maintenanceWorker };
 }

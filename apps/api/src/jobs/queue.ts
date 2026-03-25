@@ -7,9 +7,11 @@ import { JOB_SCHEDULES } from '@apex/shared';
 export const ingestionQueue = new Queue('ingestion', { connection: bullmqConnection });
 export const analysisQueue = new Queue('analysis', { connection: bullmqConnection });
 export const arbQueue = new Queue('arb-scan', { connection: bullmqConnection });
+export const maintenanceQueue = new Queue('maintenance', { connection: bullmqConnection });
 
 // ── Register Repeatable Jobs ──
 export async function registerJobs() {
+  // ─ Ingestion ─
   // Market sync: every 5 min
   await ingestionQueue.upsertJobScheduler(
     'market-sync',
@@ -17,13 +19,21 @@ export async function registerJobs() {
     { name: 'market-sync' }
   );
 
-  // Orderbook sync: every 5 min (offset handled by execution time)
+  // Orderbook sync: every 5 min
   await ingestionQueue.upsertJobScheduler(
     'orderbook-sync',
     { every: JOB_SCHEDULES.ORDERBOOK_SYNC },
     { name: 'orderbook-sync' }
   );
 
+  // News ingest: every 5 min
+  await ingestionQueue.upsertJobScheduler(
+    'news-ingest',
+    { every: JOB_SCHEDULES.NEWS_INGEST },
+    { name: 'news-ingest' }
+  );
+
+  // ─ Analysis ─
   // Signal pipeline: every 15 min
   await analysisQueue.upsertJobScheduler(
     'signal-pipeline',
@@ -31,14 +41,42 @@ export async function registerJobs() {
     { name: 'signal-pipeline' }
   );
 
-  // Arb scan: every 60 seconds
+  // ─ Arb scan: every 60 seconds ─
   await arbQueue.upsertJobScheduler(
     'arb-scan',
     { every: JOB_SCHEDULES.ARB_SCAN },
     { name: 'arb-scan' }
   );
 
-  logger.info('Registered repeatable jobs');
+  // ─ Maintenance ─
+  // Daily digest Telegram: 8 AM ET (13:00 UTC)
+  await maintenanceQueue.upsertJobScheduler(
+    'daily-digest',
+    { pattern: JOB_SCHEDULES.DAILY_DIGEST as string },
+    { name: 'daily-digest' }
+  );
+
+  // Data retention: daily cleanup
+  await maintenanceQueue.upsertJobScheduler(
+    'data-retention',
+    { every: JOB_SCHEDULES.DATA_RETENTION },
+    { name: 'data-retention' }
+  );
+
+  // Weight update: hourly module weight recalculation
+  await maintenanceQueue.upsertJobScheduler(
+    'weight-update',
+    { every: JOB_SCHEDULES.WEIGHT_UPDATE },
+    { name: 'weight-update' }
+  );
+
+  logger.info({
+    jobs: [
+      'market-sync (5m)', 'orderbook-sync (5m)', 'news-ingest (5m)',
+      'signal-pipeline (15m)', 'arb-scan (60s)',
+      'daily-digest (8AM ET)', 'data-retention (24h)', 'weight-update (1h)',
+    ],
+  }, 'Registered all repeatable jobs');
 }
 
 // ── Get Queue Stats ──
@@ -47,6 +85,7 @@ export async function getQueueStats() {
     { name: 'ingestion', queue: ingestionQueue },
     { name: 'analysis', queue: analysisQueue },
     { name: 'arb-scan', queue: arbQueue },
+    { name: 'maintenance', queue: maintenanceQueue },
   ];
 
   return Promise.all(
