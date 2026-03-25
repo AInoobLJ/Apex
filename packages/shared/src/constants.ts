@@ -2,8 +2,10 @@
 export { MODULE_IDS, MODULE_HALF_LIVES, DEFAULT_WEIGHTS } from './types';
 
 // ── Edge Thresholds ──
-export const EDGE_ACTIONABILITY_THRESHOLD = 0.03;
-export const EDGE_HIGH_THRESHOLD = 0.05;
+// Lower threshold while building paper trade history. Raise back to 0.03 once
+// we have enough resolved positions to validate edge quality.
+export const EDGE_ACTIONABILITY_THRESHOLD = 0.005; // 0.5% EV — will paper trade more, validate signal quality
+export const EDGE_HIGH_THRESHOLD = 0.03;
 
 // ── Market Categories ──
 export const MARKET_CATEGORIES = ['POLITICS', 'FINANCE', 'CRYPTO', 'SCIENCE', 'SPORTS', 'CULTURE', 'OTHER'] as const;
