@@ -1,0 +1,513 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────
+
+enum Platform {
+  KALSHI
+  POLYMARKET
+}
+
+enum MarketStatus {
+  ACTIVE
+  CLOSED
+  RESOLVED
+  SUSPENDED
+}
+
+enum MarketCategory {
+  POLITICS
+  FINANCE
+  CRYPTO
+  SCIENCE
+  SPORTS
+  CULTURE
+  OTHER
+}
+
+enum Resolution {
+  YES
+  NO
+  AMBIGUOUS
+  CANCELLED
+}
+
+enum EdgeDirection {
+  BUY_YES
+  BUY_NO
+}
+
+enum ExecutionStatus {
+  PENDING
+  FILLED
+  PARTIAL
+  FAILED
+  CANCELLED
+  EXPIRED
+}
+
+enum ExecutionMode {
+  FAST_EXEC
+  SLOW_EXEC
+}
+
+enum ArbStatus {
+  BOTH_FILLED
+  PARTIAL
+  FAILED
+}
+
+// ─── Markets ─────────────────────────────────────────
+
+model Market {
+  id                String         @id @default(cuid())
+  platform          Platform
+  platformMarketId  String
+  title             String
+  description       String?
+  category          MarketCategory
+  status            MarketStatus
+  resolutionText    String?
+  resolutionSource  String?
+  resolutionDate    DateTime?
+  resolution        Resolution?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  closesAt          DateTime?
+  volume            Float          @default(0)
+  liquidity         Float          @default(0)
+
+  contracts         Contract[]
+  signals           Signal[]
+  edges             Edge[]
+  priceSnapshots    PriceSnapshot[]
+  executionLogs     ExecutionLog[]
+  positions         Position[]
+  paperPositions    PaperPosition[]
+  alerts            Alert[]
+
+  @@unique([platform, platformMarketId])
+  @@index([status])
+  @@index([category])
+  @@index([closesAt])
+}
+
+model Contract {
+  id                 String    @id @default(cuid())
+  marketId           String
+  market             Market    @relation(fields: [marketId], references: [id])
+  platformContractId String
+  outcome            String
+  lastPrice          Float?
+  bestBid            Float?
+  bestAsk            Float?
+  volume             Float     @default(0)
+  updatedAt          DateTime  @updatedAt
+
+  orderBookSnapshots OrderBookSnapshot[]
+
+  @@unique([marketId, outcome])
+  @@index([marketId])
+}
+
+model PriceSnapshot {
+  id        String   @id @default(cuid())
+  marketId  String
+  market    Market   @relation(fields: [marketId], references: [id])
+  yesPrice  Float
+  volume    Float
+  timestamp DateTime @default(now())
+
+  @@index([marketId, timestamp])
+}
+
+model OrderBookSnapshot {
+  id            String   @id @default(cuid())
+  contractId    String
+  contract      Contract @relation(fields: [contractId], references: [id])
+  bids          Json
+  asks          Json
+  spread        Float
+  midPrice      Float
+  totalBidDepth Float
+  totalAskDepth Float
+  timestamp     DateTime @default(now())
+
+  @@index([contractId, timestamp])
+}
+
+// ─── Signals ─────────────────────────────────────────
+
+model Signal {
+  id          String   @id @default(cuid())
+  moduleId    String
+  marketId    String
+  market      Market   @relation(fields: [marketId], references: [id])
+  probability Float
+  confidence  Float
+  reasoning   String
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  @@index([marketId, moduleId])
+  @@index([moduleId, createdAt])
+  @@index([expiresAt])
+}
+
+// ─── Edges ───────────────────────────────────────────
+
+model Edge {
+  id                String        @id @default(cuid())
+  marketId          String
+  market            Market        @relation(fields: [marketId], references: [id])
+  cortexProbability Float
+  marketPrice       Float
+  edgeMagnitude     Float
+  edgeDirection     EdgeDirection
+  confidence        Float
+  expectedValue     Float
+  kellySize         Float
+  isActionable      Boolean
+  conflictFlag      Boolean       @default(false)
+  signals           Json
+  createdAt         DateTime      @default(now())
+
+  executionLogs     ExecutionLog[]
+
+  @@index([marketId, createdAt])
+  @@index([isActionable, expectedValue])
+  @@index([createdAt])
+}
+
+// ─── System ──────────────────────────────────────────
+
+model SystemConfig {
+  key   String @id
+  value Json
+}
+
+model ApiUsageLog {
+  id          String   @id @default(cuid())
+  service     String
+  endpoint    String
+  tokensIn    Int?
+  tokensOut   Int?
+  cost        Float?
+  latencyMs   Int
+  statusCode  Int
+  createdAt   DateTime @default(now())
+
+  @@index([service, createdAt])
+}
+
+// ─── TRADEX — Execution Engine ──────────────────────
+
+model ExecutionLog {
+  id              String          @id @default(cuid())
+  edgeId          String
+  edge            Edge            @relation(fields: [edgeId], references: [id])
+  marketId        String
+  market          Market          @relation(fields: [marketId], references: [id])
+  platform        Platform
+  direction       EdgeDirection
+  orderType       String          // 'market_limit' | 'limit'
+  requestedPrice  Float
+  filledPrice     Float?
+  requestedSize   Float
+  filledSize      Float?
+  fee             Float?
+  status          ExecutionStatus @default(PENDING)
+  executionMode   ExecutionMode
+  latencyMs       Int?
+  errorMessage    String?
+  createdAt       DateTime        @default(now())
+  filledAt        DateTime?
+
+  arbLeg1 ArbExecution[] @relation("leg1")
+  arbLeg2 ArbExecution[] @relation("leg2")
+
+  @@index([edgeId])
+  @@index([marketId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ArbExecution {
+  id          String     @id @default(cuid())
+  leg1LogId   String
+  leg1        ExecutionLog @relation("leg1", fields: [leg1LogId], references: [id])
+  leg2LogId   String
+  leg2        ExecutionLog @relation("leg2", fields: [leg2LogId], references: [id])
+  grossSpread Float
+  netProfit   Float?
+  status      ArbStatus
+  createdAt   DateTime   @default(now())
+
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  setting       String
+  previousValue String
+  newValue      String
+  changedAt     DateTime @default(now())
+
+  @@index([setting])
+  @@index([changedAt])
+}
+
+// ─── Phase 2: Portfolio & Alerts ────────────────
+
+enum AlertType {
+  NEW_EDGE
+  SMART_MONEY_MOVE
+  PRICE_SPIKE
+  MODULE_FAILURE
+  CAUSAL_INCONSISTENCY
+  EDGE_EVAPORATION
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model Position {
+  id            String        @id @default(cuid())
+  marketId      String
+  market        Market        @relation(fields: [marketId], references: [id])
+  platform      Platform
+  direction     EdgeDirection
+  entryPrice    Float
+  currentPrice  Float?
+  exitPrice     Float?
+  size          Float
+  quantity      Float
+  unrealizedPnl Float         @default(0)
+  realizedPnl   Float         @default(0)
+  isOpen        Boolean       @default(true)
+  createdAt     DateTime      @default(now())
+  closedAt      DateTime?
+
+  @@index([marketId])
+  @@index([isOpen])
+}
+
+model PortfolioSnapshot {
+  id              String   @id @default(cuid())
+  totalValue      Float
+  deployedCapital Float
+  unrealizedPnl   Float
+  realizedPnl     Float
+  positionCount   Int
+  timestamp       DateTime @default(now())
+
+  @@index([timestamp])
+}
+
+model PaperPosition {
+  id                    String        @id @default(cuid())
+  marketId              String
+  market                Market        @relation(fields: [marketId], references: [id])
+  direction             EdgeDirection
+  entryPrice            Float
+  currentPrice          Float?
+  kellySize             Float
+  paperPnl              Float         @default(0)
+  edgeAtEntry           Float
+  confidenceAtEntry     Float
+  fairValueAtEntry      Float?
+  daysToResolutionAtEntry Int?
+  closeReason           String?       // resolution | take_profit | stale_review | manual
+  needsReview           Boolean       @default(false)
+  reviewReason          String?
+  isOpen                Boolean       @default(true)
+  createdAt             DateTime      @default(now())
+  closedAt              DateTime?
+
+  @@index([marketId])
+  @@index([isOpen])
+}
+
+model Alert {
+  id              String        @id @default(cuid())
+  type            AlertType
+  severity        AlertSeverity
+  marketId        String?
+  market          Market?       @relation(fields: [marketId], references: [id])
+  title           String
+  message         String
+  metadata        Json          @default("{}")
+  acknowledged    Boolean       @default(false)
+  snoozedUntil    DateTime?
+  createdAt       DateTime      @default(now())
+
+  @@index([type])
+  @@index([severity])
+  @@index([createdAt])
+  @@index([acknowledged])
+}
+
+model ModuleWeight {
+  id       String @id @default(cuid())
+  moduleId String
+  category String
+  weight   Float
+  updatedAt DateTime @updatedAt
+
+  @@unique([moduleId, category])
+}
+
+// ─── Phase 2: MNEMEX Memory System ─────────────
+
+model PatternMemory {
+  id                  String         @id @default(cuid())
+  category            MarketCategory
+  pattern             String
+  confidence          Float
+  occurrences         Int            @default(1)
+  lastSeen            DateTime       @default(now())
+  avgEdgeWhenApplied  Float          @default(0)
+  createdAt           DateTime       @default(now())
+  @@index([category])
+}
+
+model MistakeMemory {
+  id              String         @id @default(cuid())
+  marketId        String
+  moduleId        String
+  predictedProb   Float
+  actualOutcome   String
+  confidence      Float
+  rootCause       String
+  lessonsLearned  String
+  category        MarketCategory
+  createdAt       DateTime       @default(now())
+  @@index([category, moduleId])
+}
+
+model MarketMemory {
+  id              String         @id @default(cuid())
+  category        MarketCategory
+  marketType      String
+  baseRate        Float
+  sampleSize      Int
+  updatedAt       DateTime       @updatedAt
+  @@unique([category, marketType])
+}
+
+// ─── Phase 2: Event Calendar ────────────────────
+
+model ScheduledEvent {
+  id                String         @id @default(cuid())
+  title             String
+  eventDate         DateTime
+  category          MarketCategory
+  source            String
+  relatedMarketIds  String[]
+  expectedVolatility Float        @default(0)
+  createdAt         DateTime       @default(now())
+  @@index([eventDate])
+  @@index([category])
+}
+
+// ─── Phase 3: On-Chain Intelligence ─────────────
+
+enum WalletClassification {
+  SMART_MONEY
+  MARKET_MAKER
+  WHALE
+  BOT
+  RETAIL
+  UNKNOWN
+}
+
+enum CausalRelationType {
+  CAUSES
+  PREVENTS
+  CORRELATES
+  CONDITIONAL_ON
+}
+
+model Wallet {
+  id                String               @id @default(cuid())
+  address           String               @unique
+  classification    WalletClassification @default(UNKNOWN)
+  roi               Float                @default(0)
+  winRate           Float                @default(0)
+  avgPositionSize   Float                @default(0)
+  marketCount       Int                  @default(0)
+  txFrequency       Float                @default(0)
+  totalVolume       Float                @default(0)
+  firstSeenAt       DateTime             @default(now())
+  lastActiveAt      DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  positions         WalletPosition[]
+
+  @@index([classification])
+  @@index([lastActiveAt])
+}
+
+model WalletPosition {
+  id              String   @id @default(cuid())
+  walletId        String
+  wallet          Wallet   @relation(fields: [walletId], references: [id])
+  marketId        String
+  tokenId         String
+  side            String   // 'YES' | 'NO'
+  quantity        Float
+  avgPrice        Float
+  currentValue    Float    @default(0)
+  pnl             Float    @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([walletId])
+  @@index([marketId])
+  @@index([tokenId])
+}
+
+model CausalEdge {
+  id              String             @id @default(cuid())
+  fromMarketId    String
+  toMarketId      String
+  relationType    CausalRelationType
+  strength        Float
+  directionality  Float              @default(0)
+  description     String
+  correlation     Float?             // statistical 30-day correlation
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@unique([fromMarketId, toMarketId])
+  @@index([fromMarketId])
+  @@index([toMarketId])
+}
+
+// ─── Phase 4: Backtesting ───────────────────────
+
+model ModuleScore {
+  id            String   @id @default(cuid())
+  moduleId      String
+  category      String
+  brierScore    Float
+  hitRate       Float
+  sampleSize    Int
+  periodStart   DateTime
+  periodEnd     DateTime
+  createdAt     DateTime @default(now())
+
+  @@index([moduleId, category])
+  @@index([periodEnd])
+}

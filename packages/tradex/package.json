@@ -1,0 +1,18 @@
+{
+  "name": "@apex/tradex",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "echo \"no tests yet\""
+  },
+  "dependencies": {
+    "@apex/db": "*",
+    "@apex/shared": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

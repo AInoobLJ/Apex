@@ -1,0 +1,38 @@
+{
+  "name": "@apex/api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "worker": "tsx src/worker.ts",
+    "sync": "tsx src/run-sync.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "@apex/db": "*",
+    "@apex/shared": "*",
+    "@apex/tradex": "*",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "axios": "^1.7.0",
+    "bottleneck": "^2.19.5",
+    "bullmq": "^5.30.0",
+    "dotenv": "^16.4.0",
+    "fastify": "^5.2.0",
+    "fastify-plugin": "^5.0.0",
+    "ioredis": "^5.4.0",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
