@@ -336,11 +336,11 @@ export class KalshiClient implements PredictionMarketAdapter {
   }
 
   /**
-   * Fetch crypto series markets (KXBTC, KXETH) — these are daily price range contracts
-   * with ~50 strike brackets each. Not returned in the general /events pagination.
+   * Fetch crypto series markets — daily/hourly price range + threshold contracts.
+   * Includes all crypto assets available on Kalshi.
    */
   async fetchCryptoSeriesMarkets(): Promise<KalshiMarket[]> {
-    const CRYPTO_SERIES = ['KXBTC', 'KXETH'];
+    const CRYPTO_SERIES = ['KXBTC', 'KXETH', 'KXSOL', 'KXXRP', 'KXDOGE', 'KXBNB', 'KXHYPE'];
     const allMarkets: KalshiMarket[] = [];
 
     for (const series of CRYPTO_SERIES) {

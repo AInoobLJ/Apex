@@ -13,6 +13,10 @@ const COINGECKO_IDS: Record<string, string> = {
   BTC: 'bitcoin',
   ETH: 'ethereum',
   SOL: 'solana',
+  XRP: 'ripple',
+  DOGE: 'dogecoin',
+  BNB: 'binancecoin',
+  HYPE: 'hyperliquid',
 };
 
 // Cache prices for 30 seconds (good enough for strike comparison, saves API calls)
@@ -74,6 +78,20 @@ export async function getCryptoPrices(): Promise<Record<string, CryptoPrice>> {
   }
 }
 
+/** Bracket width by asset — determined from Kalshi strike spacing */
+function getBracketWidth(asset: string): number {
+  switch (asset) {
+    case 'BTC': return 500;    // $500 brackets
+    case 'ETH': return 40;     // $40 brackets
+    case 'SOL': return 2;      // $2 brackets
+    case 'XRP': return 0.02;   // $0.02 brackets
+    case 'DOGE': return 0.005; // $0.005 brackets
+    case 'BNB': return 5;      // $5 brackets
+    case 'HYPE': return 0.5;   // $0.50 brackets
+    default: return 500;
+  }
+}
+
 /**
  * Contract types for Kalshi crypto markets:
  * - BRACKET: "Will BTC be between $69,000-$69,250?" (B prefix) — $250 range buckets
@@ -95,7 +113,7 @@ export function parseKalshiCryptoTicker(ticker: string): {
   contractType: CryptoContractType;
   bracketWidth: number; // $250 for Kalshi crypto brackets
 } | null {
-  const match = ticker.match(/KX(BTC|ETH|SOL)-(\w+)-([BT])(\d+)/);
+  const match = ticker.match(/KX(BTC|ETH|SOL|XRP|DOGE|BNB|HYPE)-(\w+)-([BT])([\d.]+)/);
   if (!match) return null;
 
   const typePrefix = match[3];
@@ -103,10 +121,11 @@ export function parseKalshiCryptoTicker(ticker: string): {
 
   return {
     asset: match[1],
-    strike: parseInt(match[4]),
+    strike: parseFloat(match[4]),
     dateStr: match[2],
     contractType,
-    bracketWidth: contractType === 'BRACKET' ? 500 : 0, // Kalshi BTC/ETH uses $500 brackets
+    // Bracket widths vary by asset — BTC/ETH use $500, smaller coins use smaller ranges
+    bracketWidth: contractType === 'BRACKET' ? getBracketWidth(match[1]) : 0,
   };
 }
 

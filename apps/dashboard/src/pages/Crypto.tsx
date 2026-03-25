@@ -138,7 +138,7 @@ export function Crypto() {
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
-        {['ALL', 'BTC', 'ETH', 'SOL'].map(a => (
+        {['ALL', 'BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'HYPE'].map(a => (
           <button key={a} onClick={() => setAssetFilter(a)} style={{
             ...btnStyle,
             backgroundColor: assetFilter === a ? colors.accent + '20' : 'transparent',
