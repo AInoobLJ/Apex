@@ -26,6 +26,8 @@ interface CryptoMarket {
   rawEdge: number | null;
   edgeAfterFees: number | null;
   moneyness: 'ITM' | 'ATM' | 'OTM' | null;
+  contractType: 'BRACKET' | 'FLOOR' | 'UNKNOWN';
+  bracketWidth: number | null;
   distanceFromStrike: number | null;
   speedexSignal: { probability: number; confidence: number; reasoning: string } | null;
   arbexSignal: { probability: number; confidence: number; reasoning: string } | null;
@@ -39,6 +41,7 @@ export function Crypto() {
   const [loading, setLoading] = useState(true);
   const [assetFilter, setAssetFilter] = useState<string>('ALL');
   const [moneynessFilter, setMoneynessFilter] = useState<string>('ATM');
+  const [contractTypeFilter, setContractTypeFilter] = useState<string>('ALL');
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   const fetchData = () => {
@@ -73,6 +76,7 @@ export function Crypto() {
   let filtered: CryptoMarket[] = kalshiCrypto || [];
   if (assetFilter !== 'ALL') filtered = filtered.filter(m => m.asset === assetFilter);
   if (moneynessFilter !== 'ALL') filtered = filtered.filter(m => m.moneyness === moneynessFilter);
+  if (contractTypeFilter !== 'ALL') filtered = filtered.filter(m => m.contractType === contractTypeFilter);
 
   return (
     <div style={{ maxWidth: '1200px' }}>
@@ -145,6 +149,17 @@ export function Crypto() {
           </button>
         ))}
         <span style={{ color: colors.border, margin: '0 4px' }}>|</span>
+        {['ALL', 'FLOOR', 'BRACKET'].map(ct => (
+          <button key={ct} onClick={() => setContractTypeFilter(ct)} style={{
+            ...btnStyle, padding: '4px 10px', fontSize: '11px',
+            backgroundColor: contractTypeFilter === ct ? colors.accent + '20' : 'transparent',
+            borderColor: contractTypeFilter === ct ? colors.accent : colors.border,
+            color: contractTypeFilter === ct ? colors.accent : colors.textSecondary,
+          }}>
+            {ct === 'FLOOR' ? 'Floor' : ct === 'BRACKET' ? 'Bracket' : 'All Types'}
+          </button>
+        ))}
+        <span style={{ color: colors.border, margin: '0 4px' }}>|</span>
         {['ATM', 'ALL', 'ITM', 'OTM'].map(m => (
           <button key={m} onClick={() => setMoneynessFilter(m)} style={{
             ...btnStyle, padding: '4px 10px', fontSize: '11px',
@@ -166,7 +181,7 @@ export function Crypto() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: fonts.mono, fontSize: '12px' }}>
             <thead>
               <tr>
-                {['Asset', 'Strike', 'Spot', 'Dist', 'Type', 'Market', 'Implied', 'Edge', 'Time', 'Vol', 'Signal'].map(h => (
+                {['Asset', 'Strike', 'Spot', 'Dist', 'Contract', 'Money', 'Market', 'Implied', 'Edge', 'Time', 'Vol'].map(h => (
                   <th key={h} style={{
                     textAlign: 'left', padding: '10px 6px', color: colors.textMuted,
                     fontSize: '10px', textTransform: 'uppercase',
@@ -203,6 +218,16 @@ export function Crypto() {
                     </td>
                     <td style={{ padding: '7px 6px' }}>
                       <span style={{
+                        color: m.contractType === 'BRACKET' ? colors.yellow : colors.accent,
+                        fontSize: '10px', fontWeight: 700,
+                        padding: '2px 4px', borderRadius: '3px',
+                        backgroundColor: (m.contractType === 'BRACKET' ? colors.yellow : colors.accent) + '15',
+                      }}>
+                        {m.contractType === 'BRACKET' ? 'BKT' : m.contractType === 'FLOOR' ? 'FLR' : '?'}
+                      </span>
+                    </td>
+                    <td style={{ padding: '7px 6px' }}>
+                      <span style={{
                         color: mColor, fontSize: '10px', fontWeight: 700,
                         padding: '2px 4px', borderRadius: '3px',
                         backgroundColor: mColor + '15',
@@ -225,18 +250,6 @@ export function Crypto() {
                     </td>
                     <td style={{ padding: '7px 6px', color: (m.volume ?? 0) >= 500 ? colors.textSecondary : colors.textMuted + '60', fontSize: '11px' }}>
                       {m.volume > 0 ? `$${m.volume >= 1000 ? `${(m.volume / 1000).toFixed(1)}K` : m.volume}` : '—'}
-                    </td>
-                    <td style={{ padding: '7px 6px', fontSize: '10px' }}>
-                      {m.cryptexSignal && (
-                        <span style={{ color: colors.green }} title={m.cryptexSignal.reasoning}>
-                          CX {(m.cryptexSignal.confidence * 100).toFixed(0)}%
-                        </span>
-                      )}
-                      {m.speedexSignal && (
-                        <span style={{ color: colors.yellow, marginLeft: m.cryptexSignal ? '3px' : 0 }} title={m.speedexSignal.reasoning}>
-                          SPD
-                        </span>
-                      )}
                     </td>
                   </tr>
                 );

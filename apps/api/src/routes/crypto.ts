@@ -64,6 +64,7 @@ export default async function cryptoRoutes(fastify: FastifyInstance) {
       let edgeAfterFees: number | null = null;
       let moneyness: Moneyness | null = null;
       let distanceFromStrike: number | null = null;
+      const contractType = parsed?.contractType ?? 'UNKNOWN';
 
       if (parsed && prices[parsed.asset]) {
         spotPrice = prices[parsed.asset].price;
@@ -73,15 +74,25 @@ export default async function cryptoRoutes(fastify: FastifyInstance) {
         const hoursToRes = m.closesAt
           ? Math.max(0, (m.closesAt.getTime() - Date.now()) / 3600000)
           : 24;
-        impliedProb = calculateSpotImpliedProb(spotPrice, parsed.strike, hoursToRes);
 
-        if (marketPrice > 0) {
-          rawEdge = Math.abs(impliedProb - marketPrice);
+        // Only calculate edge for FLOOR (above/below) contracts
+        // BRACKET contracts ("Will BTC be in $69,000-$69,250?") need different math
+        // and their low prices (2-5¢) are correctly priced, not mispriced
+        if (contractType === 'FLOOR') {
+          impliedProb = calculateSpotImpliedProb(spotPrice, parsed.strike, hoursToRes);
 
-          // Calculate fee for round-trip (buy + sell or buy + resolution)
-          const fee = calculateKalshiFee(marketPrice, 10);
-          const feePerContract = fee / 10;
-          edgeAfterFees = Math.max(0, rawEdge - feePerContract);
+          if (marketPrice > 0) {
+            rawEdge = Math.abs(impliedProb - marketPrice);
+            const fee = calculateKalshiFee(marketPrice, 10);
+            const feePerContract = fee / 10;
+            edgeAfterFees = Math.max(0, rawEdge - feePerContract);
+          }
+        } else if (contractType === 'BRACKET') {
+          // For bracket contracts: implied prob = P(spot in [strike, strike+250])
+          // Much lower probability, their low prices are correct
+          impliedProb = null; // Don't calculate — different model needed
+          rawEdge = null;
+          edgeAfterFees = null;
         }
       }
 
@@ -99,6 +110,8 @@ export default async function cryptoRoutes(fastify: FastifyInstance) {
         marketPrice,
         asset: parsed?.asset ?? null,
         strike: parsed?.strike ?? null,
+        contractType,
+        bracketWidth: parsed?.bracketWidth ?? null,
         spotPrice,
         impliedProb,
         rawEdge,
@@ -121,7 +134,8 @@ export default async function cryptoRoutes(fastify: FastifyInstance) {
           reasoning: cryptexSignal.reasoning,
         } : null,
         volume: m.volume,
-        tradeable: moneyness === 'ATM' && (m.volume ?? 0) >= MIN_VOLUME && (edgeAfterFees ?? 0) >= MIN_EDGE_AFTER_FEES,
+        // Only FLOOR contracts can be tradeable — bracket edges need separate model
+        tradeable: contractType === 'FLOOR' && moneyness === 'ATM' && (m.volume ?? 0) >= MIN_VOLUME && (edgeAfterFees ?? 0) >= MIN_EDGE_AFTER_FEES,
       };
     })
     // Filter out contracts expiring in < 5 minutes — untradeable

@@ -75,24 +75,38 @@ export async function getCryptoPrices(): Promise<Record<string, CryptoPrice>> {
 }
 
 /**
- * Parse a Kalshi crypto market ticker to extract the strike price and asset.
- * Format: KXBTC-26MAR2717-B82650 → { asset: 'BTC', strike: 82650, direction: 'above' }
- * Format: KXBTC-26MAR2717-T82650 → { asset: 'BTC', strike: 82650, direction: 'below' }
- * The "B" prefix means "between" or "above", depends on the specific contract.
+ * Contract types for Kalshi crypto markets:
+ * - BRACKET: "Will BTC be between $69,000-$69,250?" (B prefix) — $250 range buckets
+ * - FLOOR: "Will BTC be above $69,000?" (T prefix = threshold/floor)
+ *
+ * Format: KXBTC-26MAR2717-B82650 → BRACKET at $82,650 (range: $82,650-$82,900)
+ * Format: KXBTC-26MAR2717-T82650 → FLOOR at $82,650 (above/below threshold)
+ *
+ * Most Kalshi crypto contracts are BRACKET (250-dollar ranges), not simple above/below.
+ * A 4¢ price on a bracket contract is NOT mispriced — BTC being in a specific $250
+ * window is genuinely unlikely. Only FLOOR contracts can have latency edges.
  */
+export type CryptoContractType = 'BRACKET' | 'FLOOR' | 'UNKNOWN';
+
 export function parseKalshiCryptoTicker(ticker: string): {
   asset: string;
   strike: number;
   dateStr: string;
+  contractType: CryptoContractType;
+  bracketWidth: number; // $250 for Kalshi crypto brackets
 } | null {
-  // KXBTC-26MAR2717-B82650
-  const match = ticker.match(/KX(BTC|ETH|SOL)-(\w+)-[BT](\d+)/);
+  const match = ticker.match(/KX(BTC|ETH|SOL)-(\w+)-([BT])(\d+)/);
   if (!match) return null;
+
+  const typePrefix = match[3];
+  const contractType: CryptoContractType = typePrefix === 'B' ? 'BRACKET' : typePrefix === 'T' ? 'FLOOR' : 'UNKNOWN';
 
   return {
     asset: match[1],
-    strike: parseInt(match[3]),
+    strike: parseInt(match[4]),
     dateStr: match[2],
+    contractType,
+    bracketWidth: contractType === 'BRACKET' ? 250 : 0, // Kalshi uses $250 ranges
   };
 }
 
