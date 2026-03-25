@@ -6,15 +6,31 @@ import { handleOrderBookSync } from './orderbook-sync.job';
 import { handleSignalPipeline } from './signal-pipeline.job';
 import { handleArbScan } from './arb-scan.job';
 
+/**
+ * Wrap any job handler in try/catch so a single job failure
+ * never crashes the worker process.
+ */
+function safeHandler(name: string, handler: (job: any) => Promise<any>) {
+  return async (job: any) => {
+    try {
+      return await handler(job);
+    } catch (err: any) {
+      logger.error({ jobName: name, jobId: job?.id, err: err.message, stack: err.stack?.slice(0, 500) },
+        `Job ${name} failed — worker survived`);
+      // Don't rethrow — BullMQ will mark it as failed but worker stays alive
+    }
+  };
+}
+
 export function startWorkers() {
   const ingestionWorker = new Worker(
     'ingestion',
     async (job) => {
       switch (job.name) {
         case 'market-sync':
-          return handleMarketSync(job);
+          return safeHandler('market-sync', handleMarketSync)(job);
         case 'orderbook-sync':
-          return handleOrderBookSync(job);
+          return safeHandler('orderbook-sync', handleOrderBookSync)(job);
         default:
           logger.warn({ jobName: job.name }, 'Unknown ingestion job');
       }
@@ -22,8 +38,8 @@ export function startWorkers() {
     {
       connection: bullmqConnection,
       concurrency: 1,
-      lockDuration: 300000, // 5 min lock — market sync can take a while
-      stalledInterval: 120000, // Check for stalled jobs every 2 min
+      lockDuration: 300000,
+      stalledInterval: 120000,
     }
   );
 
@@ -32,7 +48,7 @@ export function startWorkers() {
     async (job) => {
       switch (job.name) {
         case 'signal-pipeline':
-          return handleSignalPipeline(job);
+          return safeHandler('signal-pipeline', handleSignalPipeline)(job);
         default:
           logger.warn({ jobName: job.name }, 'Unknown analysis job');
       }
@@ -40,8 +56,8 @@ export function startWorkers() {
     {
       connection: bullmqConnection,
       concurrency: 1,
-      lockDuration: 600000, // 10 min lock — signal pipeline with LLM calls takes time
-      stalledInterval: 300000, // Check stalled every 5 min
+      lockDuration: 600000,
+      stalledInterval: 300000,
     }
   );
 
@@ -50,7 +66,7 @@ export function startWorkers() {
     async (job) => {
       switch (job.name) {
         case 'arb-scan':
-          return handleArbScan(job);
+          return safeHandler('arb-scan', handleArbScan)(job);
         default:
           logger.warn({ jobName: job.name }, 'Unknown arb-scan job');
       }
@@ -58,24 +74,26 @@ export function startWorkers() {
     {
       connection: bullmqConnection,
       concurrency: 1,
-      lockDuration: 120000, // 2 min lock — arb scan is fast
+      lockDuration: 120000,
       stalledInterval: 60000,
     }
   );
 
-  ingestionWorker.on('failed', (job, err) => {
-    logger.error({ jobId: job?.id, jobName: job?.name, err: err.message }, 'Ingestion job failed');
-  });
+  // Worker-level error handlers (catches BullMQ internal errors)
+  for (const [name, worker] of [
+    ['ingestion', ingestionWorker],
+    ['analysis', analysisWorker],
+    ['arb-scan', arbWorker],
+  ] as const) {
+    worker.on('failed', (job, err) => {
+      logger.error({ jobId: job?.id, jobName: job?.name, err: err.message }, `${name} job failed`);
+    });
+    worker.on('error', (err) => {
+      logger.error({ err: err.message }, `${name} worker error — will continue`);
+    });
+  }
 
-  analysisWorker.on('failed', (job, err) => {
-    logger.error({ jobId: job?.id, jobName: job?.name, err: err.message }, 'Analysis job failed');
-  });
-
-  arbWorker.on('failed', (job, err) => {
-    logger.error({ jobId: job?.id, jobName: job?.name, err: err.message }, 'Arb scan job failed');
-  });
-
-  logger.info('BullMQ workers started');
+  logger.info('BullMQ workers started (with safe error handling)');
 
   return { ingestionWorker, analysisWorker, arbWorker };
 }

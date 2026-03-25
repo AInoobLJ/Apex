@@ -17,8 +17,8 @@ import type { MarketWithData } from '../modules/base';
 
 const flowexModule = new FlowexModule();
 
-// Max markets to process per pipeline run (prevents 30-min runs)
-const MAX_MARKETS = 100;
+// Max markets per pipeline run — keep small to reduce memory pressure and crash risk
+const MAX_MARKETS = 25;
 
 // Track pipeline run count for priority scheduling
 let pipelineRunCount = 0;
@@ -64,6 +64,7 @@ export async function handleSignalPipeline(job: Job): Promise<void> {
 
     let marketIndex = 0;
     for (const market of markets) {
+     try { // Per-market try/catch — one bad market never kills the pipeline
       const marketData = market as unknown as MarketWithData;
       const yesContract = market.contracts.find(c => c.outcome === 'YES');
       if (!yesContract?.lastPrice) continue;
@@ -191,6 +192,9 @@ export async function handleSignalPipeline(job: Job): Promise<void> {
 
       // Yield event loop
       await new Promise(r => setImmediate(r));
+     } catch (marketErr: any) {
+       logger.error({ marketId: market.id, err: marketErr.message }, 'Market analysis failed — skipping, continuing pipeline');
+     }
     }
 
     // Count tier distribution
