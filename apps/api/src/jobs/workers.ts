@@ -17,7 +17,9 @@ function safeHandler(name: string, handler: (job: any) => Promise<any>) {
     } catch (err: any) {
       logger.error({ jobName: name, jobId: job?.id, err: err.message, stack: err.stack?.slice(0, 500) },
         `Job ${name} failed — worker survived`);
-      // Don't rethrow — BullMQ will mark it as failed but worker stays alive
+      // Rethrow so BullMQ properly marks as failed (worker process won't crash
+      // because BullMQ catches this internally and triggers the 'failed' event)
+      throw err;
     }
   };
 }

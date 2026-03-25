@@ -29,7 +29,7 @@ const envSchema = z.object({
   LLM_DAILY_BUDGET: z.coerce.number().default(10.00),
 
   // Data Sources
-  BINANCE_WS_ENABLED: z.coerce.boolean().default(true),
+  BINANCE_WS_ENABLED: z.coerce.boolean().default(false), // Binance.com blocked in US — use CoinGecko fallback
   FRED_API_KEY: z.string().default(''),
   CONGRESS_API_KEY: z.string().default(''),
 
