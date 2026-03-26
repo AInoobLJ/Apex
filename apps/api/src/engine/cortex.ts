@@ -4,6 +4,15 @@ import { syncPrisma as prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { applyCalibration, fuseSignals, RawSignal } from '@apex/cortex';
 
+// LLM modules that analyze the actual event (not just statistical patterns)
+const LLM_MODULES = new Set<string>(['LEGEX', 'DOMEX', 'ALTEX', 'REFLEX']);
+
+// Minimum requirements for an edge to be actionable:
+// 1. At least 2 modules contributed probability signals
+// 2. At least 1 LLM module contributed (pure stats can't analyze the event)
+const MIN_MODULES_FOR_ACTIONABLE = 2;
+const MIN_LLM_MODULES_FOR_ACTIONABLE = 1;
+
 export interface CortexInput {
   marketId: string;
   marketPrice: number;
@@ -94,6 +103,32 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
     reasoning: probabilitySignals.find(s => s.moduleId === cm.moduleId)?.reasoning ?? '',
   }));
 
+  // ── Actionability Gate ──
+  // Must pass ALL three checks:
+  // 1. EV exceeds fee-adjusted threshold
+  // 2. At least 2 modules contributed probability signals
+  // 3. At least 1 LLM module contributed (pure stats alone can't analyze the event)
+  const moduleCount = probabilitySignals.length;
+  const llmModuleCount = probabilitySignals.filter(s => LLM_MODULES.has(s.moduleId)).length;
+  const evMeetsThreshold = expectedValue >= EDGE_ACTIONABILITY_THRESHOLD;
+  const hasEnoughModules = moduleCount >= MIN_MODULES_FOR_ACTIONABLE;
+  const hasLLMModule = llmModuleCount >= MIN_LLM_MODULES_FOR_ACTIONABLE;
+  const isActionable = evMeetsThreshold && hasEnoughModules && hasLLMModule;
+
+  // ── Build "Why is this actionable?" summary ──
+  const actionabilitySummary = buildActionabilitySummary({
+    cortexProbability, marketPrice, edgeMagnitude, edgeDirection, confidence,
+    expectedValue, moduleCount, llmModuleCount, signalContributions,
+    evMeetsThreshold, hasEnoughModules, hasLLMModule, isActionable,
+  });
+
+  if (!isActionable && evMeetsThreshold) {
+    logger.debug({
+      marketId, moduleCount, llmModuleCount,
+      reason: !hasEnoughModules ? 'insufficient modules' : 'no LLM module',
+    }, 'Edge has sufficient EV but fails module requirement — NOT actionable');
+  }
+
   return {
     marketId,
     cortexProbability,
@@ -104,12 +139,62 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
     expectedValue,
     signals: signalContributions,
     kellySize,
-    isActionable: expectedValue >= EDGE_ACTIONABILITY_THRESHOLD,
+    isActionable,
     conflictFlag,
     timestamp: new Date(),
     daysToResolution,
     capitalEfficiency,
+    actionabilitySummary,
   };
+}
+
+/**
+ * Build a human-readable "Why is this actionable?" summary for the CORTEX synthesis panel.
+ */
+function buildActionabilitySummary(params: {
+  cortexProbability: number; marketPrice: number; edgeMagnitude: number;
+  edgeDirection: string; confidence: number; expectedValue: number;
+  moduleCount: number; llmModuleCount: number;
+  signalContributions: SignalContribution[];
+  evMeetsThreshold: boolean; hasEnoughModules: boolean; hasLLMModule: boolean;
+  isActionable: boolean;
+}): string {
+  const {
+    cortexProbability, marketPrice, edgeMagnitude, edgeDirection, confidence,
+    expectedValue, moduleCount, llmModuleCount, signalContributions,
+    evMeetsThreshold, hasEnoughModules, hasLLMModule, isActionable,
+  } = params;
+
+  const parts: string[] = [];
+
+  // Core estimate
+  const direction = edgeDirection === 'BUY_YES' ? 'YES (market is underpriced)' : 'NO (market is overpriced)';
+  parts.push(`CORTEX estimates ${(cortexProbability * 100).toFixed(1)}% vs market ${(marketPrice * 100).toFixed(1)}%.`);
+  parts.push(`Direction: ${direction}. Edge: ${(edgeMagnitude * 100).toFixed(1)}%. EV: ${(expectedValue * 100).toFixed(2)}%.`);
+
+  // Module contributions
+  const topModules = signalContributions
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 3)
+    .map(s => {
+      const shortReasoning = s.reasoning.split('.')[0] || s.reasoning.slice(0, 80);
+      return `${s.moduleId}: ${shortReasoning}`;
+    });
+  parts.push(`${moduleCount} of 10 modules contributing — ${confidence > 0.5 ? 'HIGH' : confidence > 0.25 ? 'MODERATE' : 'LOW'} confidence.`);
+  if (topModules.length > 0) {
+    parts.push(`Key signals: ${topModules.join('; ')}.`);
+  }
+
+  // Actionability checks
+  if (!isActionable) {
+    const failures: string[] = [];
+    if (!evMeetsThreshold) failures.push(`EV ${(expectedValue * 100).toFixed(2)}% below 3% threshold`);
+    if (!hasEnoughModules) failures.push(`only ${moduleCount} module(s) — need at least 2`);
+    if (!hasLLMModule) failures.push(`no LLM modules (LEGEX/DOMEX/ALTEX/REFLEX) — pure stats alone cannot determine actionability`);
+    parts.push(`NOT ACTIONABLE: ${failures.join('; ')}.`);
+  }
+
+  return parts.join(' ');
 }
 
 function makeNullEdge(marketId: string, marketPrice: number): EdgeOutput {
@@ -146,6 +231,7 @@ export async function persistEdge(edge: EdgeOutput): Promise<string> {
       isActionable: edge.isActionable,
       conflictFlag: edge.conflictFlag,
       signals: edge.signals as unknown as object,
+      actionabilitySummary: edge.actionabilitySummary ?? null,
     },
   });
 

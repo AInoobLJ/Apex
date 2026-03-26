@@ -445,6 +445,11 @@ Delegates probability fusion to the canonical `fuseSignals()` engine in `@apex/c
 2. **Signal filtering**: ARBEX and SPEEDEX excluded from probability synthesis (they produce arb signals, not probability estimates).
 3. **Conflict detection**: Low agreement score (< 0.5) from fusion engine triggers conflict flag.
 4. **Kelly sizing**: Quarter-Kelly formula: `f* = max(0, ((p*b - q) / b) * 0.25)` where `p = cortexProbability`, `q = 1-p`, `b = 1/betPrice - 1`.
+5. **Minimum module requirement**: An edge is only `isActionable` if ALL three conditions are met:
+   - EV exceeds `EDGE_ACTIONABILITY_THRESHOLD` (3%)
+   - At least 2 modules contributed probability signals
+   - At least 1 LLM module (LEGEX, DOMEX, ALTEX, or REFLEX) contributed — pure statistical signals (COGEX, FLOWEX) alone detect patterns but cannot analyze the actual event
+6. **Actionability summary**: Every edge includes a human-readable `actionabilitySummary` string explaining the CORTEX estimate, direction, contributing modules, and why the edge is/isn't actionable.
 
 ```typescript
 interface CortexInput {

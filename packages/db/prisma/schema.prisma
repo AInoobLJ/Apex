@@ -181,6 +181,7 @@ model Edge {
   isActionable      Boolean
   conflictFlag      Boolean       @default(false)
   signals           Json
+  actionabilitySummary String?     // Human-readable "why is this actionable?" explanation
   createdAt         DateTime      @default(now())
 
   executionLogs     ExecutionLog[]

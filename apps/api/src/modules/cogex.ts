@@ -69,7 +69,7 @@ export class CogexModule extends SignalModule {
       adjustments,
     };
 
-    const reasoning = this.buildReasoning(adjustments, combinedAdjustment);
+    const reasoning = this.buildReasoning(adjustments, combinedAdjustment, marketPrice);
 
     return this.makeSignal(
       market.id,
@@ -243,15 +243,48 @@ export class CogexModule extends SignalModule {
     return Math.sqrt(variance);
   }
 
-  private buildReasoning(adjustments: CogexMetadata['adjustments'], combined: number): string {
+  private buildReasoning(adjustments: CogexMetadata['adjustments'], combined: number, marketPrice?: number): string {
     const parts: string[] = [];
-    if (Math.abs(adjustments.anchoring) > 0.01) parts.push(`anchoring (${adjustments.anchoring > 0 ? '+' : ''}${(adjustments.anchoring * 100).toFixed(1)}%)`);
-    if (Math.abs(adjustments.tailRisk) > 0.01) parts.push(`tail risk (${adjustments.tailRisk > 0 ? '+' : ''}${(adjustments.tailRisk * 100).toFixed(1)}%)`);
-    if (Math.abs(adjustments.recency) > 0.01) parts.push(`recency (${adjustments.recency > 0 ? '+' : ''}${(adjustments.recency * 100).toFixed(1)}%)`);
-    if (Math.abs(adjustments.favLongshot) > 0.01) parts.push(`fav-longshot (${adjustments.favLongshot > 0 ? '+' : ''}${(adjustments.favLongshot * 100).toFixed(1)}%)`);
 
-    if (parts.length === 0) return 'No significant cognitive biases detected.';
-    return `Detected biases: ${parts.join(', ')}. Combined adjustment: ${combined > 0 ? '+' : ''}${(combined * 100).toFixed(1)}%.`;
+    if (Math.abs(adjustments.anchoring) > 0.01) {
+      // Find nearest anchor for context
+      const nearest = ANCHORS.reduce((a, b) =>
+        Math.abs(b - (marketPrice ?? 0.5)) < Math.abs(a - (marketPrice ?? 0.5)) ? b : a
+      );
+      const pricePct = ((marketPrice ?? 0.5) * 100).toFixed(1);
+      const anchorPct = (nearest * 100).toFixed(0);
+      const direction = adjustments.anchoring > 0 ? 'above' : 'below';
+      const fairPct = (((marketPrice ?? 0.5) + adjustments.anchoring) * 100).toFixed(1);
+      parts.push(`Market price ${pricePct}% shows anchoring near round number ${anchorPct}%. Historical price clustering suggests the market is sticky — fair value likely ${direction} current price around ${fairPct}%.`);
+    }
+
+    if (Math.abs(adjustments.tailRisk) > 0.01) {
+      if (adjustments.tailRisk > 0) {
+        parts.push(`Tail risk underpriced: markets at this price resolve YES more often than implied. Historical base rate suggests ${(adjustments.tailRisk * 100).toFixed(1)}% higher probability than market reflects.`);
+      } else {
+        parts.push(`Heavy favorite overpriced: markets at this price resolve NO more often than implied. Historical base rate suggests ${(Math.abs(adjustments.tailRisk) * 100).toFixed(1)}% lower probability.`);
+      }
+    }
+
+    if (Math.abs(adjustments.recency) > 0.01) {
+      const direction = adjustments.recency > 0 ? 'recent drop may be overdone' : 'recent spike may be overdone';
+      parts.push(`Recency bias detected: 7-day volatility is 2x+ the 90-day average. The ${direction} — dampening recent move by ${(Math.abs(adjustments.recency) * 100).toFixed(1)}%.`);
+    }
+
+    if (Math.abs(adjustments.favLongshot) > 0.01) {
+      if (adjustments.favLongshot > 0) {
+        parts.push(`Longshot bias: markets at this price historically resolve YES more often than the market implies. Adjusting up ${(adjustments.favLongshot * 100).toFixed(1)}%.`);
+      } else {
+        parts.push(`Favorite bias: markets at this price historically resolve YES less often than the market implies. Adjusting down ${(Math.abs(adjustments.favLongshot) * 100).toFixed(1)}%.`);
+      }
+    }
+
+    if (parts.length === 0) return 'No significant cognitive biases detected in the current market price.';
+
+    const fairValue = ((marketPrice ?? 0.5) + combined) * 100;
+    parts.push(`Combined COGEX estimate: ${fairValue.toFixed(1)}% (adjustment: ${combined > 0 ? '+' : ''}${(combined * 100).toFixed(1)}% from market price).`);
+
+    return parts.join(' ');
   }
 }
 

@@ -583,6 +583,14 @@
 - [x] [FIX] Increase `EDGE_HIGH_THRESHOLD` from 0.03 to 0.05 for stronger signal quality
 - [x] [FIX] Add `ODDS_API_KEY` and `FINNHUB_API_KEY` to .env.example and config.ts
 
+### Code Review #3 — Signal Quality
+
+- [x] [FIX] Minimum module requirement: edge only `isActionable` if >= 2 modules contributed AND >= 1 is an LLM module (LEGEX/DOMEX/ALTEX/REFLEX). Pure stats (COGEX/FLOWEX alone) can't analyze the event.
+- [x] [FIX] SPORTS-EDGE Odds API: added EPL team names (Man United, Arsenal, Liverpool, etc.) + La Liga, Bundesliga, Serie A, Ligue 1 team detection. "Man United top 4" now routes to `soccer_epl`.
+- [x] [FIX] COGEX reasoning rewritten for human readability: "Market price 89.5% shows anchoring near round number 90%. Historical price clustering suggests fair value likely below current price around 87.0%." instead of "anchoring: -10.0%".
+- [x] [FIX] Added `actionabilitySummary` field to Edge model + EdgeOutput type. Every edge now includes human-readable explanation of CORTEX estimate, direction, contributing modules, and why the edge is/isn't actionable.
+- [x] [FIX] Added `actionabilitySummary` column to Prisma Edge model schema.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)

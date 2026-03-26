@@ -35,6 +35,8 @@ export interface EdgeOutput {
   isActionable: boolean;
   conflictFlag: boolean;
   timestamp: Date;
+  /** Human-readable explanation of why this edge is/isn't actionable */
+  actionabilitySummary?: string;
 }
 
 export interface SignalContribution {
