@@ -5,7 +5,8 @@ import { JOB_SCHEDULES } from '@apex/shared';
 
 // ── Queues ──
 export const ingestionQueue = new Queue('ingestion', { connection: bullmqConnection });
-export const analysisQueue = new Queue('analysis', { connection: bullmqConnection });
+export const analysisQueue = new Queue('analysis', { connection: bullmqConnection });  // RESEARCH mode (15 min)
+export const speedQueue = new Queue('speed', { connection: bullmqConnection });        // SPEED mode (30 sec)
 export const arbQueue = new Queue('arb-scan', { connection: bullmqConnection });
 export const maintenanceQueue = new Queue('maintenance', { connection: bullmqConnection });
 
@@ -39,6 +40,14 @@ export async function registerJobs() {
     'signal-pipeline',
     { every: JOB_SCHEDULES.SIGNAL_PIPELINE },
     { name: 'signal-pipeline' }
+  );
+
+  // ─ SPEED mode: 30-second cycle for latency-sensitive signals ─
+  // Runs SPEEDEX, CRYPTEX, ARBEX, FLOWEX on short-duration markets
+  await speedQueue.upsertJobScheduler(
+    'speed-pipeline',
+    { every: 30000 }, // 30 seconds
+    { name: 'speed-pipeline' }
   );
 
   // ─ Arb scan: every 60 seconds ─
@@ -88,18 +97,19 @@ export async function registerJobs() {
   logger.info({
     jobs: [
       'market-sync (5m)', 'orderbook-sync (5m)', 'news-ingest (5m)',
-      'signal-pipeline (15m)', 'arb-scan (60s)',
+      'signal-pipeline/RESEARCH (15m)', 'speed-pipeline/SPEED (30s)', 'arb-scan (60s)',
       'sigint-profiling (1h)', 'nexus-graph (6h)',
       'daily-digest (8AM ET)', 'data-retention (24h)', 'weight-update (1h)',
     ],
-  }, 'Registered all repeatable jobs');
+  }, 'Registered all repeatable jobs (RESEARCH + SPEED dual mode)');
 }
 
 // ── Get Queue Stats ──
 export async function getQueueStats() {
   const queues = [
     { name: 'ingestion', queue: ingestionQueue },
-    { name: 'analysis', queue: analysisQueue },
+    { name: 'analysis (RESEARCH)', queue: analysisQueue },
+    { name: 'speed (SPEED)', queue: speedQueue },
     { name: 'arb-scan', queue: arbQueue },
     { name: 'maintenance', queue: maintenanceQueue },
   ];

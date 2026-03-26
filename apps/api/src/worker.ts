@@ -93,6 +93,7 @@ async function main() {
     try {
       await workers.ingestionWorker.close();
       await workers.analysisWorker.close();
+      await workers.speedWorker.close();
       await workers.arbWorker.close();
       await workers.maintenanceWorker.close();
     } catch { /* ignore close errors */ }

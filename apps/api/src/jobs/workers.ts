@@ -11,6 +11,7 @@ import { handleDataRetention } from './data-retention.job';
 import { handleWeightUpdate } from './weight-update.job';
 import { handleSigintJob } from './sigint.job';
 import { handleNexusJob } from './nexus.job';
+import { handleSpeedPipeline } from './speed-pipeline.job';
 
 /**
  * Wrap any job handler in try/catch so a single job failure
@@ -75,6 +76,25 @@ export function startWorkers() {
     }
   );
 
+  // ── SPEED queue: 30-second cycle for latency-sensitive signals ──
+  const speedWorker = new Worker(
+    'speed',
+    async (job) => {
+      switch (job.name) {
+        case 'speed-pipeline':
+          return safeHandler('speed-pipeline', handleSpeedPipeline)(job);
+        default:
+          logger.warn({ jobName: job.name }, 'Unknown speed job');
+      }
+    },
+    {
+      connection: bullmqConnection,
+      concurrency: 1,
+      lockDuration: 30000,   // 30 sec lock — must complete fast
+      stalledInterval: 15000,
+    }
+  );
+
   const arbWorker = new Worker(
     'arb-scan',
     async (job) => {
@@ -118,7 +138,8 @@ export function startWorkers() {
   // Worker-level error handlers
   for (const [name, worker] of [
     ['ingestion', ingestionWorker],
-    ['analysis', analysisWorker],
+    ['analysis/RESEARCH', analysisWorker],
+    ['speed/SPEED', speedWorker],
     ['arb-scan', arbWorker],
     ['maintenance', maintenanceWorker],
   ] as const) {
@@ -130,7 +151,7 @@ export function startWorkers() {
     });
   }
 
-  logger.info('BullMQ workers started: ingestion, analysis, arb-scan, maintenance');
+  logger.info('BullMQ workers started: ingestion, analysis/RESEARCH, speed/SPEED, arb-scan, maintenance');
 
-  return { ingestionWorker, analysisWorker, arbWorker, maintenanceWorker };
+  return { ingestionWorker, analysisWorker, speedWorker, arbWorker, maintenanceWorker };
 }
