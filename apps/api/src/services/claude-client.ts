@@ -3,7 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import Bottleneck from 'bottleneck';
 import { config } from '../config';
 import { logApiUsage } from './api-usage-logger';
-import { recordLLMSpend } from './llm-budget-tracker';
+import { recordLLMSpend, shouldAllowCall } from './llm-budget-tracker';
 import { getModelConfig, LLMTask } from '@apex/shared';
 import { logger } from '../lib/logger';
 
@@ -145,6 +145,13 @@ export const CACHE_TTLS: Record<string, number> = {
  */
 export async function callClaude<T>(options: ClaudeCallOptions): Promise<ClaudeResponse<T>> {
   checkDailyReset();
+
+  // HARD BUDGET CHECK — before ANY work, check if we can afford this call
+  const budgetCheck = shouldAllowCall(options.task);
+  if (!budgetCheck.allowed) {
+    logger.warn({ task: options.task, reason: budgetCheck.reason }, 'LLM call BLOCKED by budget/rate limit');
+    throw new Error(`LLM call blocked: ${budgetCheck.reason}`);
+  }
 
   // Check result cache first
   const taskKey = options.task;

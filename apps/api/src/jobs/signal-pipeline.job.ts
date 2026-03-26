@@ -17,9 +17,9 @@ import type { MarketWithData } from '../modules/base';
 
 const flowexModule = new FlowexModule();
 
-// Max markets per pipeline run — keep small to reduce memory pressure and crash risk
-// Reduced from 25 to 15 to stay within --max-old-space-size=2048 with LLM modules
-const MAX_MARKETS = 15;
+// Max markets per pipeline run — cost control is critical
+// Reduced from 25→15→10 to keep daily LLM spend under $20
+const MAX_MARKETS = 10;
 
 // Track pipeline run count for priority scheduling
 let pipelineRunCount = 0;
@@ -46,9 +46,28 @@ export async function handleSignalPipeline(job: Job): Promise<void> {
       return;
     }
 
-    // 2. Get top active markets by volume — fetch extra to compensate for extreme-price filtering
+    // 2. Get active markets with strict cost-control filters
+    const now = new Date();
+    const minVolume = 500; // Skip dead markets nobody trades
+    const maxDaysToResolution = 90;
+    const minClosesAt = new Date(now.getTime() + 86400000); // > 1 day out
+    const maxClosesAt = new Date(now.getTime() + maxDaysToResolution * 86400000);
+
+    // Skip markets already analyzed in the last 6 hours (respect cache TTL)
+    const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+    const recentlyAnalyzed = await prisma.signal.findMany({
+      where: { moduleId: 'DOMEX', createdAt: { gte: sixHoursAgo } },
+      select: { marketId: true },
+      distinct: ['marketId'],
+    });
+    const recentlyAnalyzedIds = new Set(recentlyAnalyzed.map(s => s.marketId));
+
     const rawMarkets = await prisma.market.findMany({
-      where: { status: 'ACTIVE' },
+      where: {
+        status: 'ACTIVE',
+        volume: { gte: minVolume },
+        closesAt: { gte: minClosesAt, lte: maxClosesAt },
+      },
       orderBy: { volume: 'desc' },
       take: MAX_MARKETS * 10,
       include: {
@@ -57,13 +76,21 @@ export async function handleSignalPipeline(job: Job): Promise<void> {
       },
     });
 
-    // Filter to markets with YES contracts in analyzable price range (0.05–0.95)
+    // Filter: analyzable price range + not recently analyzed
     const markets = rawMarkets.filter(m => {
       const yesContract = m.contracts.find(c => c.outcome === 'YES');
-      return yesContract?.lastPrice && yesContract.lastPrice >= 0.05 && yesContract.lastPrice <= 0.95;
+      if (!yesContract?.lastPrice) return false;
+      if (yesContract.lastPrice < 0.05 || yesContract.lastPrice > 0.95) return false;
+      if (recentlyAnalyzedIds.has(m.id)) return false; // Skip: already analyzed within 6h
+      return true;
     }).slice(0, MAX_MARKETS);
 
-    logger.info({ marketCount: markets.length, rawFetched: rawMarkets.length }, 'Running signal pipeline');
+    logger.info({
+      marketCount: markets.length,
+      rawFetched: rawMarkets.length,
+      skippedRecent: recentlyAnalyzedIds.size,
+      filters: { minVolume, maxDays: maxDaysToResolution },
+    }, 'Running signal pipeline');
 
     // 3. Run modules per market
     let totalSignals = 0;
