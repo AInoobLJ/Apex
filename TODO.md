@@ -591,6 +591,12 @@
 - [x] [FIX] Added `actionabilitySummary` field to Edge model + EdgeOutput type. Every edge now includes human-readable explanation of CORTEX estimate, direction, contributing modules, and why the edge is/isn't actionable.
 - [x] [FIX] Added `actionabilitySummary` column to Prisma Edge model schema.
 
+### Follow-up Review Fixes
+
+- [x] [FIX] Store FULL feature vectors in DOMEX signal metadata: `serializeFeatureVector()` replaces `summarizeFeatures()` — stores all 40+ numeric domain features so the weekly learning loop can retrain on rich data, not just base features
+- [x] [FIX] Add exit fees to paper P&L: `updatePaperPositions()` deducts Kalshi exit fee (7% × price × (1-price)) from ongoing P&L and take-profit closes. Resolution exits have zero fee (Kalshi doesn't charge on settlement).
+- [x] [FIX] Learning loop Telegram summary: after weekly model retrain, sends message with accuracy change (old% → new%), Brier score, training sample count, calibration record count
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)

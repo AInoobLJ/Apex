@@ -2529,17 +2529,20 @@ interface DomexAgentResult {
 The learning loop runs weekly (Sunday 2 AM UTC) and closes the feedback loop between predictions and outcomes:
 
 1. **Query resolved markets** — all markets with known outcomes from the last 180 days
-2. **Build training data** — reconstruct FeatureVector from stored signals, pair with binary outcome (YES=1, NO=0)
+2. **Build training data** — reconstruct FULL FeatureVector from stored signal metadata (all 40+ domain features), pair with binary outcome (YES=1, NO=0)
 3. **Retrain FeatureModel** — gradient descent logistic regression, minimum 20 samples, 100 epochs
 4. **Persist weights** — serialized to `SystemConfig.feature_model_weights` in DB
 5. **Recalibrate** — compute per-module, per-category bias corrections from signal accuracy
 6. **Persist calibration** — serialized to `SystemConfig.calibration_records` in DB
+7. **Telegram summary** — sends accuracy change, Brier score, training samples, calibration records to Telegram
 
 **On worker startup:** Both model weights and calibration records are restored from DB via `loadModel()` and `loadCalibration()`.
 
 **Price anchoring prevention:** `priceLevel` weight is 0 in DEFAULT_WEIGHTS. Market price ONLY enters at edge calculation (`cortexProbability - marketPrice`), never as a model input. This ensures independent probability estimates.
 
 **FeatureModel typed schemas:** All 7 DOMEX agents (FED-HAWK, GEO-INTEL, CRYPTO-ALPHA, SPORTS-EDGE, WEATHER-HAWK, LEGAL-EAGLE, CORPORATE-INTEL) have typed feature interfaces mapped in `buildFeatureVector()`. No agent falls through to `default:break`.
+
+**Full feature vector storage:** DOMEX stores the complete serialized FeatureVector (all 40+ numeric features) in `Signal.metadata.featureVector`. The learning loop reads this to reconstruct rich training data. Without full storage, the model can only train on base features (price, volume, spread) and loses all domain-specific signal.
 
 **Supporting scheduled jobs:**
 | Job | Schedule | Purpose |
@@ -2554,10 +2557,12 @@ The learning loop runs weekly (Sunday 2 AM UTC) and closes the feedback loop bet
 
 **File:** `apps/api/src/services/paper-trader.ts`
 
-Paper positions now subtract estimated fees at entry to make P&L realistic:
-- **Kalshi fee model:** 7% × price × (1 - price) per contract (round-trip)
-- **BUY_YES:** entry price adjusted UP by fee (costs more to buy)
-- **BUY_NO:** entry price adjusted DOWN by fee (receive less)
+Paper positions now subtract estimated fees at both entry AND exit to make P&L realistic:
+- **Kalshi fee model:** 7% × price × (1 - price) per contract per side
+- **Entry:** BUY_YES price adjusted UP by fee, BUY_NO adjusted DOWN
+- **Exit (take-profit/stale):** exit fee deducted from P&L: `grossPnl - estimateFee(currentPrice) × kellySize`
+- **Exit (resolution):** zero fee — Kalshi doesn't charge on contract settlement at $1 or $0
+- **Ongoing P&L:** open positions show fee-adjusted P&L (exit fee estimated at current price)
 - **EDGE_ACTIONABILITY_THRESHOLD:** increased from 0.5% to 3% — edges below 3% are negative EV after Kalshi round-trip fees
 
 ### V2.6.3 Data Source Requirements Per Agent

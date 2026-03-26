@@ -1,8 +1,9 @@
 import { Job } from 'bullmq';
 import { syncPrisma as prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
-import { trainModel, serializeModel, loadModel, recalibrate } from '@apex/cortex';
+import { trainModel, serializeModel, getModelInfo, recalibrate } from '@apex/cortex';
 import type { FeatureVector } from '@apex/cortex';
+import { telegramService } from '../services/telegram';
 
 /**
  * Weekly learning loop: the most critical job in the system.
@@ -85,7 +86,8 @@ export async function handleLearningLoop(job: Job): Promise<void> {
 
   logger.info({ trainingData: trainingData.length, resolvedMarkets: resolvedMarkets.length }, 'Training data prepared');
 
-  // Step 3: Train the model
+  // Step 3: Train the model (capture old accuracy first)
+  const oldModelInfo = getModelInfo();
   const newModel = trainModel(trainingData);
   logger.info({
     sampleSize: newModel.sampleSize,
@@ -144,4 +146,27 @@ export async function handleLearningLoop(job: Job): Promise<void> {
     modelAccuracy: newModel.accuracy,
     calibrationRecords: calibrationRecords.length,
   }, 'Learning loop complete');
+
+  // Step 7: Send Telegram summary
+  const oldAcc = (oldModelInfo.accuracy * 100).toFixed(1);
+  const newAcc = (newModel.accuracy * 100).toFixed(1);
+  // Compute average Brier score from calibration records
+  const avgBrier = calibrationRecords.length > 0
+    ? calibrationRecords.reduce((s, r) => s + r.brierScore, 0) / calibrationRecords.length
+    : 0;
+
+  const telegramMsg = [
+    `📊 <b>Weekly Model Update</b>`,
+    ``,
+    `Accuracy: ${oldAcc}% → ${newAcc}%`,
+    `Brier score: ${avgBrier.toFixed(4)}`,
+    `Training samples: ${trainingData.length}`,
+    `Calibration records: ${calibrationRecords.length}`,
+    `Resolved markets: ${resolvedMarkets.length}`,
+    `Features: ${Object.keys(newModel.weights).length}`,
+  ].join('\n');
+
+  await telegramService.sendMessage(telegramMsg).catch((err: any) => {
+    logger.warn({ err: err.message }, 'Failed to send learning loop Telegram summary');
+  });
 }

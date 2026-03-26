@@ -93,7 +93,7 @@ export class DomexModule extends SignalModule {
       reasoning,
       {
         agentCount: validResults.length,
-        featureVector: this.summarizeFeatures(featureVector),
+        featureVector: this.serializeFeatureVector(featureVector),
         featureImportance: prediction.featureImportance,
         agents: validResults.map(({ agent, result }) => ({
           name: agent.name,
@@ -216,19 +216,34 @@ export class DomexModule extends SignalModule {
     return fv;
   }
 
-  /** Summarize feature vector for metadata (avoid storing full vector) */
-  private summarizeFeatures(fv: FeatureVector): Record<string, boolean> {
-    return {
-      hasFedHawk: !!fv.fedHawk,
-      hasGeoIntel: !!fv.geoIntel,
-      hasSportsEdge: !!fv.sportsEdge,
-      hasCryptoAlpha: !!fv.cryptoAlpha,
-      hasLegex: !!fv.legex,
-      hasAltex: !!fv.altex,
-      hasWeatherHawk: !!fv.weatherHawk,
-      hasLegalEagle: !!fv.legalEagle,
-      hasCorporateIntel: !!fv.corporateIntel,
+  /**
+   * Serialize the FULL feature vector for storage in signal metadata.
+   * The weekly learning loop uses this to retrain the FeatureModel on all 40+ domain features,
+   * not just base features. Without this, training data is sparse and the model can't learn
+   * which domain-specific features actually predict outcomes.
+   */
+  private serializeFeatureVector(fv: FeatureVector): Record<string, unknown> {
+    const serialized: Record<string, unknown> = {
+      marketId: fv.marketId,
+      marketPrice: fv.marketPrice,
+      daysToResolution: fv.daysToResolution,
+      category: fv.category,
+      volume: fv.volume,
+      priceLevel: fv.priceLevel,
+      bidAskSpread: fv.bidAskSpread,
+      volumeRank: fv.volumeRank,
+      timeToResolutionBucket: fv.timeToResolutionBucket,
     };
+    if (fv.fedHawk) serialized.fedHawk = fv.fedHawk;
+    if (fv.geoIntel) serialized.geoIntel = fv.geoIntel;
+    if (fv.sportsEdge) serialized.sportsEdge = fv.sportsEdge;
+    if (fv.cryptoAlpha) serialized.cryptoAlpha = fv.cryptoAlpha;
+    if (fv.legex) serialized.legex = fv.legex;
+    if (fv.altex) serialized.altex = fv.altex;
+    if (fv.weatherHawk) serialized.weatherHawk = fv.weatherHawk;
+    if (fv.legalEagle) serialized.legalEagle = fv.legalEagle;
+    if (fv.corporateIntel) serialized.corporateIntel = fv.corporateIntel;
+    return serialized;
   }
 }
 

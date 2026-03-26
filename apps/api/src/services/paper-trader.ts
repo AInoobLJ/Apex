@@ -7,7 +7,7 @@ import type { EdgeOutput } from '@apex/shared';
 // Subtract estimated entry fee from entry price to make paper P&L realistic.
 const KALSHI_FEE_RATE = 0.07;
 
-function estimateEntryFee(price: number): number {
+function estimateFee(price: number): number {
   return KALSHI_FEE_RATE * price * (1 - price);
 }
 
@@ -27,7 +27,7 @@ export async function enterPaperPosition(edge: EdgeOutput, fairValue?: number, d
 
   // Adjust entry price for fees: buying costs more, selling gets less
   const rawPrice = edge.marketPrice;
-  const fee = estimateEntryFee(rawPrice);
+  const fee = estimateFee(rawPrice);
   const adjustedEntryPrice = edge.edgeDirection === 'BUY_YES'
     ? rawPrice + fee   // pay more when buying
     : rawPrice - fee;  // receive less when selling
@@ -77,9 +77,14 @@ export async function updatePaperPositions(): Promise<number> {
     const yesPrice = pos.market.contracts[0]?.lastPrice;
     if (yesPrice == null) continue;
 
-    const pnl = pos.direction === 'BUY_YES'
+    // Gross P&L before exit fees (entry fee already baked into entryPrice)
+    const grossPnl = pos.direction === 'BUY_YES'
       ? (yesPrice - pos.entryPrice) * pos.kellySize
       : (pos.entryPrice - yesPrice) * pos.kellySize;
+
+    // For open positions, show P&L with estimated exit fee deducted
+    const exitFee = estimateFee(yesPrice);
+    const pnl = grossPnl - (exitFee * pos.kellySize);
 
     const updateData: Record<string, unknown> = { currentPrice: yesPrice, paperPnl: pnl };
 
@@ -90,10 +95,13 @@ export async function updatePaperPositions(): Promise<number> {
       if (Math.abs(denominator) > 0.001) {
         const convergence = (yesPrice - pos.entryPrice) / denominator;
         if (convergence >= 0.70) {
+          // Apply exit fee on take-profit close
+          const takeProfitPnl = grossPnl - (exitFee * pos.kellySize);
           updateData.isOpen = false;
           updateData.closedAt = new Date();
           updateData.closeReason = 'take_profit';
-          logger.info({ positionId: pos.id, convergence: convergence.toFixed(2), pnl }, 'Take-profit triggered');
+          updateData.paperPnl = takeProfitPnl;
+          logger.info({ positionId: pos.id, convergence: convergence.toFixed(2), grossPnl, exitFee, netPnl: takeProfitPnl }, 'Take-profit triggered (fee-adjusted)');
         }
       }
     }
