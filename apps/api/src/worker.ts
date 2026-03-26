@@ -67,7 +67,7 @@ async function main() {
   try {
     const modelConfig = await syncPrisma.systemConfig.findUnique({ where: { key: 'feature_model_weights' } });
     if (modelConfig?.value) {
-      loadModel(JSON.parse(modelConfig.value));
+      loadModel(JSON.parse(String(modelConfig.value)));
       logger.info('FeatureModel weights restored from DB');
     }
   } catch (err: any) {
@@ -77,7 +77,7 @@ async function main() {
   try {
     const calConfig = await syncPrisma.systemConfig.findUnique({ where: { key: 'calibration_records' } });
     if (calConfig?.value) {
-      loadCalibration(JSON.parse(calConfig.value));
+      loadCalibration(JSON.parse(String(calConfig.value)));
       logger.info('Calibration records restored from DB');
     }
   } catch (err: any) {
