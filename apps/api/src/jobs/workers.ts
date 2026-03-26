@@ -12,6 +12,7 @@ import { handleWeightUpdate } from './weight-update.job';
 import { handleSigintJob } from './sigint.job';
 import { handleNexusJob } from './nexus.job';
 import { handleSpeedPipeline } from './speed-pipeline.job';
+import { handleBackup } from './backup.job';
 
 /**
  * Wrap any job handler in try/catch so a single job failure
@@ -123,6 +124,8 @@ export function startWorkers() {
           return safeHandler('data-retention', handleDataRetention)(job);
         case 'weight-update':
           return safeHandler('weight-update', handleWeightUpdate)(job);
+        case 'backup':
+          return safeHandler('backup', handleBackup)(job);
         default:
           logger.warn({ jobName: job.name }, 'Unknown maintenance job');
       }

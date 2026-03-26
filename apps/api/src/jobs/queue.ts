@@ -79,6 +79,13 @@ export async function registerJobs() {
     { name: 'weight-update' }
   );
 
+  // Nightly Postgres backup: 3 AM UTC (11 PM ET)
+  await maintenanceQueue.upsertJobScheduler(
+    'backup',
+    { pattern: '0 3 * * *' },
+    { name: 'backup' }
+  );
+
   // ─ Intelligence ─
   // SIGINT wallet profiling: every 1 hour
   await analysisQueue.upsertJobScheduler(
@@ -99,7 +106,7 @@ export async function registerJobs() {
       'market-sync (5m)', 'orderbook-sync (5m)', 'news-ingest (5m)',
       'signal-pipeline/RESEARCH (15m)', 'speed-pipeline/SPEED (30s)', 'arb-scan (60s)',
       'sigint-profiling (1h)', 'nexus-graph (6h)',
-      'daily-digest (8AM ET)', 'data-retention (24h)', 'weight-update (1h)',
+      'daily-digest (8AM ET)', 'data-retention (24h)', 'weight-update (1h)', 'backup (3AM UTC)',
     ],
   }, 'Registered all repeatable jobs (RESEARCH + SPEED dual mode)');
 }

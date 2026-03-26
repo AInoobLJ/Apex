@@ -1,10 +1,19 @@
-import React from 'react';
+import React, { useState, useCallback } from 'react';
 import { Sidebar } from './Sidebar';
 import { ErrorBoundary } from './ErrorBoundary';
 import { AlertPanel } from './AlertPanel';
+import { ShortcutHelp } from './ShortcutHelp';
+import { CommandPalette } from './CommandPalette';
+import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { colors, fonts } from '../theme';
 
 export function Layout({ children }: { children: React.ReactNode }) {
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const openPalette = useCallback(() => setPaletteOpen(true), []);
+  const closePalette = useCallback(() => setPaletteOpen(false), []);
+
+  const { showHelp, setShowHelp } = useKeyboardShortcuts(openPalette);
+
   return (
     <div style={{
       display: 'flex',
@@ -30,6 +39,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <ErrorBoundary>{children}</ErrorBoundary>
         </main>
       </div>
+
+      {/* Overlays */}
+      {showHelp && <ShortcutHelp onClose={() => setShowHelp(false)} />}
+      {paletteOpen && <CommandPalette onClose={closePalette} />}
     </div>
   );
 }

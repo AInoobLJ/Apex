@@ -86,6 +86,94 @@ export default async function systemRoutes(fastify: FastifyInstance) {
     };
   });
 
+  // GET /system/job-errors — recent failed jobs with error details
+  fastify.get('/system/job-errors', async (req) => {
+    const { queue: queueName, limit: limitParam } = req.query as { queue?: string; limit?: string };
+    const limit = Math.min(parseInt(limitParam || '50', 10), 200);
+    const { ingestionQueue, analysisQueue, speedQueue, arbQueue, maintenanceQueue } = await import('../jobs/queue');
+
+    const queues = queueName
+      ? [{ name: queueName, q: { ingestion: ingestionQueue, analysis: analysisQueue, speed: speedQueue, 'arb-scan': arbQueue, maintenance: maintenanceQueue }[queueName]! }]
+      : [
+          { name: 'ingestion', q: ingestionQueue },
+          { name: 'analysis', q: analysisQueue },
+          { name: 'speed', q: speedQueue },
+          { name: 'arb-scan', q: arbQueue },
+          { name: 'maintenance', q: maintenanceQueue },
+        ];
+
+    const errors: { queue: string; jobName: string; failedAt: string; error: string; attemptsMade: number }[] = [];
+
+    for (const { name, q } of queues) {
+      if (!q) continue;
+      const failed = await q.getFailed(0, Math.floor(limit / queues.length));
+      for (const job of failed) {
+        errors.push({
+          queue: name,
+          jobName: job.name,
+          failedAt: job.finishedOn ? new Date(job.finishedOn).toISOString() : '',
+          error: job.failedReason || 'Unknown error',
+          attemptsMade: job.attemptsMade,
+        });
+      }
+    }
+
+    // Sort by most recent first
+    errors.sort((a, b) => b.failedAt.localeCompare(a.failedAt));
+
+    return { errors: errors.slice(0, limit) };
+  });
+
+  // GET /system/cost-forecast — project LLM costs for next 7 days
+  fastify.get('/system/cost-forecast', async () => {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 86400000);
+
+    const dailyCosts = await prisma.apiUsageLog.groupBy({
+      by: ['createdAt'],
+      where: { service: 'claude', createdAt: { gte: sevenDaysAgo } },
+      _sum: { cost: true },
+      _count: true,
+    });
+
+    // Aggregate by date
+    const costByDay: Record<string, { cost: number; calls: number }> = {};
+    for (const row of dailyCosts) {
+      const day = row.createdAt.toISOString().slice(0, 10);
+      costByDay[day] = costByDay[day] || { cost: 0, calls: 0 };
+      costByDay[day].cost += row._sum.cost ?? 0;
+      costByDay[day].calls += row._count;
+    }
+
+    const days = Object.entries(costByDay).sort(([a], [b]) => a.localeCompare(b));
+    const avgDailyCost = days.length > 0
+      ? days.reduce((sum, [, d]) => sum + d.cost, 0) / days.length
+      : 0;
+
+    // Simple linear trend
+    const recentDays = days.slice(-3);
+    const recentAvg = recentDays.length > 0
+      ? recentDays.reduce((sum, [, d]) => sum + d.cost, 0) / recentDays.length
+      : 0;
+
+    const budget = parseFloat(process.env.LLM_DAILY_BUDGET || '25');
+
+    // Project next 7 days
+    const forecast = [];
+    for (let i = 1; i <= 7; i++) {
+      const date = new Date(Date.now() + i * 86400000).toISOString().slice(0, 10);
+      forecast.push({ date, projectedCost: Math.round(recentAvg * 10000) / 10000 });
+    }
+
+    return {
+      history: days.map(([date, data]) => ({ date, cost: Math.round(data.cost * 10000) / 10000, calls: data.calls })),
+      avgDailyCost: Math.round(avgDailyCost * 10000) / 10000,
+      recentTrend: Math.round(recentAvg * 10000) / 10000,
+      forecast,
+      budget,
+      daysUntilBudgetExceeded: recentAvg > 0 ? Math.ceil(budget / recentAvg) : null,
+    };
+  });
+
   // GET /system/data-sources — status of all external data feeds
   fastify.get('/system/data-sources', async () => {
     const { binanceWs } = await import('../services/data-sources/binance-ws');

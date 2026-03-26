@@ -1,7 +1,7 @@
 # APEX — Technical Specification
 
 **Derived from:** PRD.md v1.0
-**Date:** 2026-03-24
+**Date:** 2026-03-26
 **Status:** Implementation Reference
 
 ---
@@ -2383,6 +2383,202 @@ KALSHI_USE_DEMO=true                    # Start in demo/sandbox mode
 POLYMARKET_PRIVATE_KEY=                 # Dedicated ETH wallet private key
 POLYGON_RPC_URL=https://polygon-rpc.com # Polygon RPC endpoint
 ```
+
+---
+
+## v2 Architecture Additions
+
+The following features were built after the initial spec and represent significant architectural upgrades. They are documented here as the authoritative reference.
+
+### V2.1 Opportunity Lifecycle & State Machine
+
+**Files:**
+- `apps/api/src/services/opportunity-machine.ts` — state machine
+- `apps/api/src/routes/opportunities.ts` — API routes
+- Prisma models: `Opportunity`, `OpportunityTransition`
+
+Every edge detected by CORTEX becomes an **Opportunity** that moves through a defined state machine:
+
+```
+DISCOVERED → RESEARCHED → RANKED → APPROVED → PAPER_TRACKING → ORDERED → FILLED → MONITORING → RESOLVED
+                                  ↓                                  ↓
+                              CLOSED (failed/cancelled)
+```
+
+Each transition is logged in `OpportunityTransition` with timestamp, metadata, and the triggering module. The opportunity tracks:
+- Mode: RESEARCH vs SPEED
+- Discovered-by attribution (which module found it)
+- Market price at discovery
+- Full audit trail for post-mortem analysis
+
+**Attribution scoring** on resolved opportunities:
+- Thesis correctness rate
+- Execution quality (1-5 scale)
+- Fee drag (% of edge lost to fees)
+- Timing score (entry/exit quality)
+- Realized P&L
+- Alpha decomposition per module
+
+### V2.2 Split CORTEX into `packages/cortex` (4 Engines)
+
+**Files:** `packages/cortex/src/`
+
+The monolithic CORTEX engine was split into 4 independent, composable engines:
+
+**Signal Fusion Engine** (`signal-fusion.ts`):
+- Weighted combination of raw signals from 11 modules
+- Per-module time decay constants (SPEEDEX 5min, CRYPTEX 10min, FLOWEX 30min, ARBEX 15min, etc.)
+- Agreement scoring (0-1 disagreement metric)
+- Module weights: SPEEDEX (0.20), ARBEX (0.18), COGEX (0.15), CRYPTEX (0.15), FLOWEX (0.12), LEGEX (0.10), DOMEX (0.10), ALTEX (0.08), SIGINT (0.08), REFLEX (0.05), NEXUS (0.04)
+
+**Calibration Engine** (`calibration-memory.ts`):
+- Per-module, per-category historical bias correction
+- Tracks avgOverestimate, avgAbsError, Brier score
+- Time-bucketed calibration (hours/days/weeks/months)
+- Recalibrates weekly from resolved markets
+- Requires 10+ samples before applying correction
+
+**Opportunity Scoring Engine** (`opportunity-scoring.ts`):
+- Edge magnitude: |fair_value - market_price|
+- Expected value: net_edge x confidence
+- Capital efficiency: EV / sqrt(days_to_resolution)
+- Quarter-Kelly sizing for safety
+- Fee drag calculation (Kalshi: 7% x price x (1-price), Polymarket: 2%)
+- Actionability thresholds: MIN_EDGE=2%, MIN_EV=0.5%, MIN_CONFIDENCE=10%, MIN_VOLUME=$100
+
+**Portfolio Allocator** (`portfolio-allocator.ts`):
+- Category budgets: CRYPTO 30%, POLITICS 15%, SPORTS 20%, FINANCE 15%, OTHER 10%, SCIENCE 5%, ENTERTAINMENT 5%
+- Daily capital deployment cap ($30 default)
+- Max simultaneous positions (5 default)
+- Max total deployed ($100 default)
+- Concentration limits: single market 5%, single category 25%
+- `resetDaily()` clears daily trade counter at midnight
+
+### V2.3 Dual Mode Worker (RESEARCH / SPEED)
+
+**File:** `apps/api/src/services/dual-mode-pipeline.ts`
+
+Markets are classified into two processing modes based on time to resolution:
+
+**RESEARCH mode** (closesAt > 24 hours):
+- Full LLM pipeline: COGEX, FLOWEX, LEGEX, DOMEX, ALTEX, REFLEX, SIGINT, NEXUS
+- 15-minute cycle
+- SLOW_EXEC (Telegram confirmation)
+
+**SPEED mode** (closesAt < 24 hours):
+- Math-only modules: SPEEDEX, CRYPTEX, ARBEX, FLOWEX, COGEX
+- 30-second cycle via `speed-pipeline.job.ts`
+- FAST_EXEC (auto-execution)
+
+`classifyMode(market)` determines mode based on `closesAt` timestamp.
+
+### V2.4 Feature Model (Logistic Regression over LLM Features)
+
+**File:** `packages/cortex/src/feature-model.ts`
+
+Structured feature extraction from LLM agent outputs, fed into a logistic regression model for calibrated probability estimates:
+
+- **FedHawkFeatures**: fedFundsRate, cpiTrend, dotPlotDirection, fedSpeechTone, marketImpliedRate, yieldCurveSpread
+- **GeoIntelFeatures**: incumbentApproval, pollingSpread, legislativeStatus, keyDatesAhead, escalationLevel, sanctionIntensity
+- **SportsEdgeFeatures**: homeAway, restDays, injuryImpact, recentForm, headToHeadRecord, eloRating, lineMovement
+- **CryptoAlphaFeatures**: fundingRate, exchangeFlows, protocolTVL, regulatoryNews, volatilityRatio, orderBookImbalance
+- **LegexFeatures**: ambiguityScore, misinterpretationRisk, resolutionSourceReliability, edgeCaseCount, crossPlatformDivergence
+- **AltexFeatures**: newsRelevance, sentimentDirection, informationAsymmetry, upcomingCatalysts, sourceReliability
+
+Weekly retraining on resolved markets. Falls back to base rates with insufficient data.
+
+### V2.5 Implied Volatility Model
+
+**File:** `packages/cortex/src/implied-vol-model.ts`
+
+Black-Scholes-like pricing for crypto bracket/floor contracts:
+- Log-normal distribution with CDF approximation (Abramowitz & Stegun)
+- Realized volatility from price history (annualized)
+- `priceFloorContract(S, K, vol, T)`: P(S > K) calculation
+- `priceBracketContract(S, lower, upper, vol, T)`: P(lower <= S_T <= upper)
+- Default 57% annualized vol if insufficient price data
+
+### V2.6 Expanded DOMEX (8 Agents)
+
+**Files:** `apps/api/src/modules/domex-agents/` + `apps/api/src/modules/domex.ts`
+
+Expanded from 3 to 8 domain expert agents:
+
+| Agent | Target Categories |
+|-------|------------------|
+| FedHawkAgent | FINANCE, POLITICS |
+| GeoIntelAgent | POLITICS, CRYPTO |
+| CryptoAlphaAgent | CRYPTO |
+| SportsEdgeAgent | SPORTS |
+| WeatherHawkAgent | SCIENCE, ENTERTAINMENT |
+| LegalEagleAgent | POLITICS, FINANCE, CRYPTO |
+| CorporateIntelAgent | FINANCE, ENTERTAINMENT |
+| EntertainmentScoutAgent | ENTERTAINMENT, SPORTS |
+
+All agents run in parallel on category-relevant markets. Trimmed-mean aggregation (drop highest/lowest if 3+). Flag agent disagreement >8% spread. Penalize confidence on disagreement.
+
+### V2.7 Crypto Strategy Engine (CRYPTEX)
+
+**Files:** `apps/api/src/modules/crypto-strategy/`
+
+Four specialized crypto modules with in-memory caching (5-min TTL per symbol):
+
+- **FundingRateModule** (`funding-rate.ts`): Perpetual futures funding arbitrage signals
+- **SpotBookImbalanceModule** (`spot-book-imbalance.ts`): Order book depth imbalance detection
+- **VolatilityMismatchModule** (`volatility-mismatch.ts`): Realized vs implied vol spread
+- **WhaleFlowModule** (`whale-flow.ts`): Large transaction detection and classification
+
+CRYPTEX is the 11th signal module, added to SPEED mode pipeline with 10-min time decay.
+
+### V2.8 Cost Optimization & Smart Order Routing
+
+**Files:** `packages/tradex/src/strategies/`
+
+Four execution strategies:
+
+- **SmartRouter** (`smart-router.ts`): Compares effective price across Kalshi & Polymarket. Factors: platform price, fee rate, liquidity, slippage estimate. Slippage model: 0.1% per 1% of liquidity taken (capped 2%).
+- **IcebergOrderer** (`iceberg.ts`): Splits large orders into smaller chunks to minimize market impact
+- **MakerFirstStrategy** (`maker-first.ts`): Posts limit orders first, falls back to taker after timeout
+- **MarketMakerStrategy** (`market-maker.ts`): Two-sided quoting for capturing spread
+
+### V2.9 WebSocket Auth Ticket System
+
+**File:** `apps/api/src/plugins/websocket.ts`
+
+Replaces raw API key in WebSocket URL with a short-lived ticket:
+
+1. `POST /api/v1/auth/ws-ticket` — exchange API key for 60-second single-use ticket (32-byte randomBytes hex)
+2. `GET /ws?ticket=<ticket>` — connect with single-use enforcement + expiry validation
+3. Legacy fallback: `?apiKey=xxx` still works but is deprecated
+4. Auto-cleanup of expired tickets every 60 seconds
+
+### V2.10 Auto-Restart Wrapper
+
+**File:** `apps/api/scripts/start-worker.sh`
+
+Bash script with infinite loop restart logic and 5-second delay on crash. Usage: `./apps/api/scripts/start-worker.sh`
+
+### V2.11 Rate Limiting & Security
+
+- **Fastify rate-limit plugin**: 100 requests per minute per API key, keyed by X-API-KEY header or IP address
+- **SHA-256 hashed cache keys** for sensitive data in Redis
+
+### V2.12 Extended Data Sources
+
+**Files:** `apps/api/src/services/data-sources/`
+
+- `binance-ws.ts` — Binance WebSocket price feed
+- `fedwatch.ts` — CME FedWatch probability data
+- `fred.ts` — Federal Reserve Economic Data (FRED) API
+- `congress.ts` — Congressional activity tracker
+- `polling.ts` — Political polling aggregation
+
+### V2.13 Additional Services
+
+- **Historical Ingest** (`jobs/historical-ingest.job.ts`): Backfills market data for new markets
+- **Retroactive Backtest** (`services/retroactive-backtest.ts`): Tests strategies against historical data
+- **Event-Driven Ingestion** (`services/event-driven-ingestion.ts`): Real-time catalyst detection and market re-analysis
+- **Crypto Price Service** (`services/crypto-price.ts`): Cross-exchange price aggregation
 
 #### Testing Requirements (TRADEX)
 

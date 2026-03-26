@@ -1,7 +1,7 @@
 # APEX — Task Checklist
 
 **Derived from:** SPEC.md
-**Last updated:** 2026-03-24
+**Last updated:** 2026-03-26
 
 ---
 
@@ -177,7 +177,7 @@
 - [x] [P2] Add `PaperPosition` Prisma model, run migration (table created with direction, entryPrice, currentPrice, kellySize, paperPnl, edgeAtEntry, confidenceAtEntry)
 - [x] [P2] Create `PaperTrader` service: auto-enters paper position for every actionable edge, updates paperPnl on market sync (paper positions created and tracked)
 - [x] [P2] Add paper P&L summary to `GET /api/v1/portfolio/summary` (returns paper and live P&L separately)
-- [x] [P2] Add 📝 PAPER ONLY / 🎓 GRADUATED badges to dashboard edge cards (badges render correctly)
+- [x] [P2] Add PAPER ONLY / GRADUATED badges to dashboard edge cards (badges render correctly)
 
 ### Alert System
 
@@ -192,17 +192,17 @@
 
 - [x] [P2] Add Telegram env vars (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_ENABLED`) to `.env.example` and config validation
 - [x] [P2] Create `TelegramService` class with `sendMessage`, `sendAlert`, `sendDailyDigest`, `testConnection` (bot sends test message successfully)
-- [x] [P2] Create HTML message template formatters for all alert types: NEW_EDGE 🔥, SMART_MONEY 🐋, PRICE_SPIKE ⚡, MODULE_FAILURE 🚨, EDGE_EVAPORATION 💨 (each template renders correctly)
+- [x] [P2] Create HTML message template formatters for all alert types: NEW_EDGE, SMART_MONEY, PRICE_SPIKE, MODULE_FAILURE, EDGE_EVAPORATION (each template renders correctly)
 - [x] [P2] Integrate `TelegramService` into `AlertManager` as delivery channel: fires on severity >= MEDIUM (Telegram messages received for high-severity alerts)
-- [x] [P2] Update Telegram templates with paper trade prefix for non-graduated edges (📝 prefix appears)
-- [x] [P2] Add `daily-digest` BullMQ cron job at 8 AM ET (`0 13 * * *`): active markets, top 3 edges, portfolio summary, module health (📊 digest delivered daily)
+- [x] [P2] Update Telegram templates with paper trade prefix for non-graduated edges (prefix appears)
+- [x] [P2] Add `daily-digest` BullMQ cron job at 8 AM ET (`0 13 * * *`): active markets, top 3 edges, portfolio summary, module health (digest delivered daily)
 
 ### TRADEX — Telegram Execution Flow (Phase 2)
 
-- [x] [P2] Implement Telegram reply listener in `packages/tradex/src/telegram/reply-listener.ts` (poll getUpdates every 5s for ✅/❌)
+- [x] [P2] Implement Telegram reply listener in `packages/tradex/src/telegram/reply-listener.ts` (poll getUpdates every 5s)
 - [x] [P2] Add execution confirmation and failure Telegram templates (fill price, fee, position ID)
 - [x] [P2] Wire SLOW_EXEC edges (DOMEX, LEGEX, COGEX, REFLEX, NEXUS, ALTEX) to Telegram confirmation flow with 2-hour auto-expiry
-- [x] [P2] Add Telegram notification for risk limit changes ("⚙️ Risk limit updated: max per trade $10 → $25")
+- [x] [P2] Add Telegram notification for risk limit changes
 
 ### Memory & Feedback System — MNEMEX (A2, Phase 2 portion)
 
@@ -215,7 +215,7 @@
 - [x] [P2] Add `ScheduledEvent` Prisma model, run migration (table created with title, date, category, source, relatedMarketIds, expectedVolatility)
 - [x] [P2] Create `EventCalendar` service with static FOMC and BLS economic data release schedules (next 90 days of events populated)
 - [x] [P2] Create event-to-market mapping via Claude: match ScheduledEvents to active markets (related markets linked correctly)
-- [x] [P2] Add catalyst alerts to Telegram: "⏰ FOMC decision in 24h. 3 related markets with active edges." (pre-event alerts fire)
+- [x] [P2] Add catalyst alerts to Telegram: "FOMC decision in 24h. 3 related markets with active edges." (pre-event alerts fire)
 
 ### WebSocket
 
@@ -250,23 +250,23 @@
 
 ### SIGINT Enhancements — Whale Tracking (A7)
 
-- [x] [P3] Add `FreshWalletDetector`: flag wallets < 7 days old with first position > $5K, severity scored by age × size × resolution proximity (correctly flags test fresh wallet as potential insider)
+- [x] [P3] Add `FreshWalletDetector`: flag wallets < 7 days old with first position > $5K, severity scored by age x size x resolution proximity (correctly flags test fresh wallet as potential insider)
 - [x] [P3] Add `WalletClusterer`: group wallets by funding source address, report cluster combined positions (clusters wallets funded from same source)
 - [x] [P3] Add `CopyTradeSignal`: track time-to-price-impact after smart money entry, generate signal with execution window (reports 5-15 min window for known smart money wallets)
-- [x] [P3] Add fresh wallet insider alerts to Telegram (🕵️ INSIDER ALERT template with wallet age, position size, market)
+- [x] [P3] Add fresh wallet insider alerts to Telegram (INSIDER ALERT template with wallet age, position size, market)
 
 ### NEXUS Module
 
 - [x] [P3] Add CausalEdge Prisma model + CausalRelationType enum, run migration
 - [x] [P3] Write NEXUS causal prompt in `prompts/nexus-causal.md` (instructs causal relationship identification with JSON output)
 - [x] [P3] Implement graph builder: LLM pass identifies causal links between market pairs, statistical pass computes 30-day price correlations, merge into CausalEdge records (given related markets, creates correct edges)
-- [x] [P3] Implement consistency checker: extracts implied joint probabilities from connected subgraphs, validates P(A∩B) ≤ min(P(A),P(B)) etc. (detects inconsistency when markets are mispriced relative to each other)
+- [x] [P3] Implement consistency checker: extracts implied joint probabilities from connected subgraphs, validates P(A∩B) <= min(P(A),P(B)) etc. (detects inconsistency when markets are mispriced relative to each other)
 - [x] [P3] Implement correlation matrix: rolling 30-day price correlation for all active market pairs (produces correct correlations for test data)
 - [x] [P3] Create graph-rebuild job (6hr) and consistency-check job (15min) in BullMQ
 
 ### ARBEX Synthetic Arb (A5, Phase 3 portion)
 
-- [x] [P3] Add synthetic arb detection to ARBEX using NEXUS causal graph: detect logically constrained prices that are inconsistent (e.g., P(wins primary)=30% but P(wins general)=25% → P(general|primary)=83%)
+- [x] [P3] Add synthetic arb detection to ARBEX using NEXUS causal graph: detect logically constrained prices that are inconsistent (e.g., P(wins primary)=30% but P(wins general)=25%)
 
 ### SPEEDEX — Latency Arbitrage (A6)
 
@@ -337,7 +337,7 @@
 ### Backtesting Engine
 
 - [x] [P4] Add ModuleScore Prisma model, run migration
-- [x] [P4] Implement Brier score calculator: for each resolved market, compute (forecast - outcome)² per module and for CORTEX (correct scores for known inputs)
+- [x] [P4] Implement Brier score calculator: for each resolved market, compute (forecast - outcome)^2 per module and for CORTEX (correct scores for known inputs)
 - [x] [P4] Implement calibration curve generator: bin forecasts into 10 probability buckets, compute actual outcome rate per bin (diagonal = well-calibrated)
 - [x] [P4] Implement module contribution analysis: leave-one-out Brier score comparison, direction accuracy, confidence calibration (identifies which modules add value)
 - [x] [P4] Implement P&L simulation: given edge history + resolutions + Kelly sizing → cumulative returns, max drawdown, Sharpe ratio (correct simulation for test data)
@@ -388,8 +388,8 @@
 
 ### Portfolio & Performance
 
-- [ ] [P5] Add correlation-adjusted exposure to portfolio manager using NEXUS correlations (effective exposure computed for correlated positions)
-- [ ] [P5] Implement nightly Postgres backup job via pg_dump (backup file created, verified restorable)
+- [x] [P5] Add correlation-adjusted exposure to portfolio manager using NEXUS correlations (effective exposure computed for correlated positions)
+- [x] [P5] Implement nightly Postgres backup job via pg_dump (backup file created, verified restorable)
 - [x] [P5] Pipeline performance optimization: parallel module execution, query batching, index tuning (200+ markets processed in < 5 min)
 
 ### TRADEX — Position Sync & Analytics (Phase 5)
@@ -399,13 +399,13 @@
 
 ### Dashboard Enhancements
 
-- [ ] [P5] Add keyboard shortcuts: `1`-`8` for page navigation, `/` for search, `?` for help overlay (shortcuts work from any page)
-- [ ] [P5] Build CommandPalette component (fuzzy search for markets, quick navigation)
-- [ ] [P5] Enhance System Monitor: job queue drill-down, error detail view, cost forecasting chart
+- [x] [P5] Add keyboard shortcuts: `1`-`8` for page navigation, `/` for search, `?` for help overlay (shortcuts work from any page)
+- [x] [P5] Build CommandPalette component (fuzzy search for markets, quick navigation)
+- [x] [P5] Enhance System Monitor: job queue drill-down, error detail view, cost forecasting chart
 
 ### Phase 5 Integration
 
-- [ ] [P5] **CHECKPOINT**: Circuit breakers protect all external calls → graduation engine tracks paper performance → risk control gate enforces limits → position sync auto-closes resolved positions → execution analytics API returns metrics → all builds pass
+- [ ] [P5] **CHECKPOINT**: Circuit breakers protect all external calls → graduation engine tracks paper performance → risk control gate enforces limits → position sync auto-closes resolved positions → execution analytics API returns metrics → correlation-adjusted exposure computed → backup job runs nightly → keyboard shortcuts and command palette work → System Monitor shows drill-downs and cost forecast → all builds pass
 
 ---
 
@@ -419,5 +419,125 @@
 
 ---
 
-*Total items: ~170*
+## v2 Features (Built, Not in Original Spec)
+
+### Opportunity Lifecycle & State Machine
+
+- [x] [v2] Implement `Opportunity` and `OpportunityTransition` Prisma models with full state tracking
+- [x] [v2] Build opportunity state machine in `apps/api/src/services/opportunity-machine.ts`: DISCOVERED → RESEARCHED → RANKED → APPROVED → PAPER_TRACKING → ORDERED → FILLED → MONITORING → RESOLVED (+ CLOSED for failures)
+- [x] [v2] Add opportunity API routes in `apps/api/src/routes/opportunities.ts` with attribution scoring (thesis correctness, execution quality, fee drag, timing score, realized P&L)
+
+### Split CORTEX into packages/cortex (4 Engines)
+
+- [x] [v2] Create `packages/cortex` workspace with 4 independent engines
+- [x] [v2] Implement Signal Fusion Engine (`packages/cortex/src/signal-fusion.ts`): weighted signal combination for 11 modules with per-module time decay and agreement scoring
+- [x] [v2] Implement Calibration Engine (`packages/cortex/src/calibration-memory.ts`): per-module per-category historical bias correction, time-bucketed recalibration from resolved markets
+- [x] [v2] Implement Opportunity Scoring Engine (`packages/cortex/src/opportunity-scoring.ts`): edge magnitude, EV, capital efficiency, quarter-Kelly sizing, fee drag calculation, actionability thresholds
+- [x] [v2] Implement Portfolio Allocator (`packages/cortex/src/portfolio-allocator.ts`): category budgets, daily capital deployment cap, max simultaneous positions, concentration limits, `resetDaily()` function
+
+### Dual Mode Worker (RESEARCH / SPEED)
+
+- [x] [v2] Implement dual-mode pipeline in `apps/api/src/services/dual-mode-pipeline.ts`: classifies markets into RESEARCH (24+ hours) vs SPEED (<24 hours) based on closesAt
+- [x] [v2] RESEARCH mode: uses all LLM modules (COGEX, FLOWEX, LEGEX, DOMEX, ALTEX, REFLEX, SIGINT, NEXUS), 15-min cycle, SLOW_EXEC
+- [x] [v2] SPEED mode: uses math-only modules (SPEEDEX, CRYPTEX, ARBEX, FLOWEX, COGEX), 30-sec cycle, FAST_EXEC
+- [x] [v2] Add `speed-pipeline.job.ts` as separate BullMQ job for the 30-second SPEED cycle
+
+### Feature Model (Logistic Regression over LLM Features)
+
+- [x] [v2] Implement `FeatureModel` in `packages/cortex/src/feature-model.ts`: logistic regression over structured LLM features
+- [x] [v2] Define 6 feature schemas: FedHawkFeatures, GeoIntelFeatures, SportsEdgeFeatures, CryptoAlphaFeatures, LegexFeatures, AltexFeatures
+- [x] [v2] Weekly retraining on resolved markets with fallback to base rates on insufficient data
+
+### Implied Volatility Model
+
+- [x] [v2] Implement `ImpliedVolModel` in `packages/cortex/src/implied-vol-model.ts`: Black-Scholes-like pricing for crypto bracket/floor contracts
+- [x] [v2] Log-normal distribution with CDF approximation (Abramowitz & Stegun), realized vol from price history
+- [x] [v2] `priceFloorContract()` for P(S > K) and `priceBracketContract()` for P(lower <= S_T <= upper)
+
+### 8 DOMEX Agents (expanded from 3)
+
+- [x] [v2] Add SportsEdgeAgent for SPORTS category (team form, injuries, matchup analysis)
+- [x] [v2] Add WeatherHawkAgent for SCIENCE/ENTERTAINMENT categories (climate, natural disasters)
+- [x] [v2] Add LegalEagleAgent for POLITICS/FINANCE/CRYPTO categories (legal/regulatory interpretation)
+- [x] [v2] Add CorporateIntelAgent for FINANCE/ENTERTAINMENT categories (corporate news, earnings)
+- [x] [v2] Add EntertainmentScoutAgent for ENTERTAINMENT/SPORTS categories (cultural trends, celebrity news)
+
+### Crypto Strategy Engine (CRYPTEX)
+
+- [x] [v2] Create crypto strategy engine in `apps/api/src/modules/crypto-strategy/` with 4 specialized modules
+- [x] [v2] Implement FundingRateModule: perpetual futures funding arbitrage signals with in-memory caching (5-min TTL)
+- [x] [v2] Implement SpotBookImbalanceModule: order book depth imbalance detection
+- [x] [v2] Implement VolatilityMismatchModule: realized vs implied vol spread detection
+- [x] [v2] Implement WhaleFlowModule: large transaction detection and classification
+
+### Cost Optimization & Smart Order Routing
+
+- [x] [v2] Implement SmartRouter in `packages/tradex/src/strategies/smart-router.ts`: compares effective price across Kalshi & Polymarket (platform price + fee rate + liquidity + slippage estimate)
+- [x] [v2] Implement IcebergOrderer in `packages/tradex/src/strategies/iceberg.ts`: splits large orders into smaller chunks
+- [x] [v2] Implement MakerFirstStrategy in `packages/tradex/src/strategies/maker-first.ts`: posts limit orders first, falls back to taker
+- [x] [v2] Implement MarketMakerStrategy in `packages/tradex/src/strategies/market-maker.ts`: two-sided quoting
+
+### WebSocket Auth Ticket System
+
+- [x] [v2] Implement ticket-based WebSocket auth in `apps/api/src/plugins/websocket.ts`: POST /api/v1/auth/ws-ticket exchanges API key for 60-second single-use ticket
+- [x] [v2] WebSocket connection via `GET /ws?ticket=<ticket>` with single-use enforcement, expiry validation, legacy apiKey fallback
+
+### Auto-Restart Wrapper
+
+- [x] [v2] Create `apps/api/scripts/start-worker.sh`: bash script with infinite loop restart logic, 5-second delay on crash
+
+### Rate Limiting & Security
+
+- [x] [v2] Add Fastify rate-limit plugin: 100 requests per minute per API key, keyed by X-API-KEY header or IP
+- [x] [v2] SHA-256 hashed cache keys for sensitive data in Redis
+
+### Data Sources Integration
+
+- [x] [v2] Implement Binance WebSocket price feed (`apps/api/src/services/data-sources/binance-ws.ts`)
+- [x] [v2] Implement FedWatch data source (`apps/api/src/services/data-sources/fedwatch.ts`)
+- [x] [v2] Implement FRED economic data source (`apps/api/src/services/data-sources/fred.ts`)
+- [x] [v2] Implement Congressional data source (`apps/api/src/services/data-sources/congress.ts`)
+- [x] [v2] Implement Polling data source (`apps/api/src/services/data-sources/polling.ts`)
+
+### Additional Jobs & Services
+
+- [x] [v2] Implement historical-ingest job for backfilling market data
+- [x] [v2] Implement retroactive-backtest service for testing strategies against historical data
+- [x] [v2] Implement event-driven-ingestion service for real-time catalyst detection
+- [x] [v2] Implement crypto-price service for cross-exchange price aggregation
+
+---
+
+## Upcoming / Not Yet Built
+
+### Phase 5 Remaining
+
+- [x] [P5] Add correlation-adjusted exposure to portfolio manager using NEXUS correlations
+- [ ] [P5] Implement nightly Postgres backup job via pg_dump
+- [ ] [P5] Add keyboard shortcuts: `1`-`8` for page navigation, `/` for search, `?` for help overlay
+- [ ] [P5] Build CommandPalette component (fuzzy search for markets, quick navigation)
+- [x] [P5] Enhance System Monitor: job queue drill-down, error detail view, cost forecasting chart
+
+### Phase 6
+
+- [ ] [P6] Add Manifold adapter implementing `PredictionMarketAdapter` interface
+- [ ] [P6] Add Metaculus adapter implementing `PredictionMarketAdapter` interface
+- [ ] [P6] Implement position auto-sync: read open positions from Kalshi/Polymarket APIs
+- [ ] [P6] Build mobile-friendly Alerts page (responsive, alert-only view usable on phone)
+
+### Discussed But Not Built
+
+- [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)
+- [ ] [FUTURE] ML-based wallet classification (replace rule-based classifier with gradient boosted model)
+- [ ] [FUTURE] Real-time P&L WebSocket stream (push portfolio value updates to dashboard)
+- [ ] [FUTURE] Automated strategy parameter tuning via Bayesian optimization
+- [ ] [FUTURE] Exchange-specific order type support (Kalshi limit orders with GTC/GTD, Polymarket conditional orders)
+- [ ] [FUTURE] Historical volatility surface construction for crypto markets
+- [ ] [FUTURE] Telegram inline keyboard for quick position management (close/adjust from chat)
+- [ ] [FUTURE] Docker deployment with health-checked containers, auto-restart, and log aggregation
+- [ ] [FUTURE] API rate limit dashboard (visualize external API usage vs. limits per provider)
+
+---
+
+*Total items: ~200+*
 *Update this file as tasks are completed: change `- [ ]` to `- [x]`*

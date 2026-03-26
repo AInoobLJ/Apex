@@ -35,7 +35,8 @@
       "Bash(lsof -ti:3001)",
       "Bash(curl -s --max-time 5 -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/system/health\")",
       "Bash(curl -v --max-time 5 \"http://localhost:3001/api/v1/system/health\")",
-      "Bash(curl -s --max-time 5 -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/markets?limit=1\")"
+      "Bash(curl -s --max-time 5 -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/markets?limit=1\")",
+      "Bash(npx tsc:*)"
     ]
   }
 }

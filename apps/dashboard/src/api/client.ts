@@ -116,6 +116,20 @@ export const api = {
   getApiUsage: () =>
     apiFetch<{ today: { totalCost: number; totalCalls: number; totalTokensIn: number; totalTokensOut: number; byEndpoint: Record<string, { calls: number; cost: number }> }; budget: number }>('/system/api-usage'),
 
+  // System — Job errors + Cost forecast
+  getJobErrors: (query: Record<string, unknown> = {}) =>
+    apiFetch<{ errors: { queue: string; jobName: string; failedAt: string; error: string; attemptsMade: number }[] }>(`/system/job-errors?${qs(query)}`),
+
+  getCostForecast: () =>
+    apiFetch<{
+      history: { date: string; cost: number; calls: number }[];
+      avgDailyCost: number;
+      recentTrend: number;
+      forecast: { date: string; projectedCost: number }[];
+      budget: number;
+      daysUntilBudgetExceeded: number | null;
+    }>('/system/cost-forecast'),
+
   // SIGINT
   getWallets: (query: Record<string, unknown> = {}) =>
     apiFetch<{ data: unknown[] }>(`/sigint/wallets?${qs(query)}`),
