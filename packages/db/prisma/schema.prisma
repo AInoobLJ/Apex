@@ -91,6 +91,7 @@ model Market {
   positions         Position[]
   paperPositions    PaperPosition[]
   alerts            Alert[]
+  opportunities     Opportunity[]
 
   @@unique([platform, platformMarketId])
   @@index([status])
@@ -510,4 +511,120 @@ model ModuleScore {
 
   @@index([moduleId, category])
   @@index([periodEnd])
+}
+
+// ─── v2: Opportunity Lifecycle ──────────────────
+
+enum OpportunityStatus {
+  DISCOVERED
+  RESEARCHED
+  RANKED
+  APPROVED
+  PAPER_TRACKING
+  ORDERED
+  FILLED
+  MONITORING
+  CLOSED
+  RESOLVED
+}
+
+enum OpportunityMode {
+  RESEARCH
+  SPEED
+}
+
+enum ApprovalType {
+  AUTO
+  MANUAL
+  GRADUATED
+}
+
+model Opportunity {
+  id                    String             @id @default(cuid())
+  marketId              String
+  market                Market             @relation(fields: [marketId], references: [id])
+  platform              Platform
+  status                OpportunityStatus  @default(DISCOVERED)
+  mode                  OpportunityMode
+
+  // Discovery
+  discoveredAt          DateTime           @default(now())
+  discoveredBy          String             // moduleId that first flagged this
+
+  // Research — populated by SignalFusionEngine
+  cortexProbability     Float?
+  marketPriceAtDiscovery Float
+  edgeMagnitude         Float?
+  signalIds             String[]           // references to Signal.id
+
+  // Ranking — populated by OpportunityScoringEngine
+  rank                  Int?
+  expectedValue         Float?
+  capitalEfficiencyScore Float?            // edge / sqrt(days_to_resolution)
+
+  // Approval
+  approvedAt            DateTime?
+  approvalType          ApprovalType?
+
+  // Execution
+  orderId               String?            // ExecutionLog.id
+  orderType             String?            // 'LIMIT' | 'MARKET_LIMIT' | 'MAKER_ONLY'
+  requestedPrice        Float?
+  filledPrice           Float?
+  filledSize            Float?
+  fees                  Float?
+  slippage              Float?             // filledPrice - requestedPrice
+
+  // Monitoring
+  currentPrice          Float?
+  unrealizedPnl         Float?
+  holdDuration          Int?               // hours held
+
+  // Resolution & Attribution
+  resolvedAt            DateTime?
+  outcome               Resolution?
+  realizedPnl           Float?
+  thesisCorrect         Boolean?
+  executionQuality      Float?             // 0-1, how well we executed vs ideal
+  feeDrag               Float?             // total fees as % of position
+  timingScore           Float?             // 0-1, entry timing quality
+  noFillRegret          Float?             // P&L we missed if order didn't fill
+
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  transitions           OpportunityTransition[]
+
+  @@index([marketId])
+  @@index([status])
+  @@index([mode])
+  @@index([status, mode])
+  @@index([createdAt])
+  @@index([rank])
+}
+
+model OpportunityTransition {
+  id              String            @id @default(cuid())
+  opportunityId   String
+  opportunity     Opportunity       @relation(fields: [opportunityId], references: [id])
+  fromStatus      OpportunityStatus
+  toStatus        OpportunityStatus
+  reason          String
+  metadata        Json              @default("{}")
+  createdAt       DateTime          @default(now())
+
+  @@index([opportunityId])
+  @@index([createdAt])
+}
+
+// Category budget allocation for PortfolioAllocator
+model CategoryBudget {
+  id              String         @id @default(cuid())
+  category        String         // MarketCategory or 'CRYPTO_SPEED'
+  budgetPct       Float          // 0-1, percentage of total capital
+  deployedAmount  Float          @default(0)
+  maxPositions    Int            @default(5)
+  updatedAt       DateTime       @updatedAt
+
+  @@unique([category])
 }

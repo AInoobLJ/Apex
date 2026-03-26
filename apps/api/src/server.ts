@@ -14,6 +14,7 @@ import sigintRoutes from './routes/sigint';
 import nexusRoutes from './routes/nexus';
 import backtestRoutes from './routes/backtest';
 import cryptoRoutes from './routes/crypto';
+import opportunityRoutes from './routes/opportunities';
 
 export async function buildServer() {
   const server = Fastify({
@@ -37,6 +38,7 @@ export async function buildServer() {
   await server.register(nexusRoutes, { prefix: '/api/v1' });
   await server.register(backtestRoutes, { prefix: '/api/v1' });
   await server.register(cryptoRoutes, { prefix: '/api/v1' });
+  await server.register(opportunityRoutes, { prefix: '/api/v1' });
 
   return server;
 }
