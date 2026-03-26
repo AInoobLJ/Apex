@@ -61,6 +61,30 @@ export interface AltexFeatures {
   sourceReliability: number;      // 0-1
 }
 
+export interface WeatherHawkFeatures {
+  temperatureAnomaly: number;     // degrees above/below average
+  precipitationChance: number;    // 0-1
+  forecastConfidence: number;     // 0-1, NWS forecast confidence
+  severeWeatherRisk: number;      // 0-1
+  forecastHorizonDays: number;    // how far out the forecast extends
+}
+
+export interface LegalEagleFeatures {
+  precedentStrength: number;      // 0-1, how strong existing precedent is
+  courtLevel: number;             // 0=district, 1=circuit, 2=scotus
+  rulingLikelihood: number;       // 0-1, estimated probability of ruling in favor
+  caseAgeMonths: number;          // months since filing
+  amicusBriefs: number;           // count of amicus briefs filed
+}
+
+export interface CorporateIntelFeatures {
+  earningsSurprise: number;       // last quarter surprise (%)
+  analystConsensus: number;       // -1 (negative) to 1 (positive)
+  filingActivity: number;         // 0-1, recent SEC filing intensity
+  approvalPrecedent: number;      // 0-1, historical approval rate for similar
+  insiderActivity: number;        // -1 (selling) to 1 (buying)
+}
+
 export interface FeatureVector {
   marketId: string;
   marketPrice: number;
@@ -73,8 +97,11 @@ export interface FeatureVector {
   cryptoAlpha?: CryptoAlphaFeatures;
   legex?: LegexFeatures;
   altex?: AltexFeatures;
+  weatherHawk?: WeatherHawkFeatures;
+  legalEagle?: LegalEagleFeatures;
+  corporateIntel?: CorporateIntelFeatures;
   // Base features always present
-  priceLevel: number;            // current YES price
+  priceLevel: number;            // kept for backward compat but weight=0 (excluded from model)
   bidAskSpread: number;          // orderbook spread
   volumeRank: number;            // 0-1 percentile within category
   timeToResolutionBucket: number; // 0=hours, 1=days, 2=weeks, 3=months
@@ -91,30 +118,66 @@ interface ModelWeights {
 }
 
 // Default weights — replaced by trained model when enough resolved markets accumulate
+// CRITICAL: priceLevel is ZERO — market price must NOT influence the probability model.
+// Market price only enters at edge calculation: edge = cortexProbability - marketPrice.
+// A non-zero priceLevel weight causes sigmoid(2.5 * marketPrice + noise) ≈ marketPrice,
+// which guarantees edge ≈ 0 and makes every LLM credit wasted.
 const DEFAULT_WEIGHTS: ModelWeights = {
   intercept: 0,
   weights: {
-    // Base features
-    'priceLevel': 2.5,            // market price is strong prior
+    // Base features — priceLevel intentionally excluded (anchoring bias)
     'bidAskSpread': -0.3,         // wide spread = uncertainty
     'volumeRank': 0.1,            // more volume = more info
     'daysToResolution': -0.01,    // distant = more uncertainty
+    // FedHawk
+    'fedHawk.fedFundsRate': 0.1,
+    'fedHawk.cpiTrend': 0.3,
+    'fedHawk.dotPlotDirection': 0.25,
+    'fedHawk.fedSpeechTone': 0.2,
+    'fedHawk.yieldCurveSpread': -0.15,
     // Legex
     'legex.ambiguityScore': -0.15,
     'legex.misinterpretationRisk': -0.2,
+    'legex.resolutionSourceReliability': 0.1,
+    'legex.edgeCaseCount': -0.1,
+    'legex.crossPlatformDivergence': -0.15,
     // Altex
     'altex.sentimentDirection': 0.3,
     'altex.informationAsymmetry': 0.4,
+    'altex.newsRelevance': 0.15,
+    'altex.upcomingCatalysts': 0.1,
     // Geo
     'geoIntel.pollingSpread': 0.02,
     'geoIntel.incumbentApproval': 0.01,
+    'geoIntel.legislativeStatus': 0.2,
+    'geoIntel.escalationLevel': -0.15,
+    'geoIntel.sanctionIntensity': -0.1,
     // Crypto
     'cryptoAlpha.fundingRate': -0.5,
     'cryptoAlpha.orderBookImbalance': 0.3,
+    'cryptoAlpha.exchangeFlows': -0.2,
+    'cryptoAlpha.volatilityRatio': -0.15,
+    'cryptoAlpha.regulatoryNews': 0.25,
     // Sports
     'sportsEdge.homeAway': 0.15,
     'sportsEdge.recentForm': 0.8,
     'sportsEdge.injuryImpact': -0.6,
+    'sportsEdge.eloRating': 0.001,
+    'sportsEdge.lineMovement': 0.4,
+    'sportsEdge.headToHeadRecord': 0.3,
+    // WeatherHawk
+    'weatherHawk.temperatureAnomaly': 0.2,
+    'weatherHawk.precipitationChance': 0.15,
+    'weatherHawk.forecastConfidence': 0.1,
+    // LegalEagle
+    'legalEagle.precedentStrength': 0.3,
+    'legalEagle.courtLevel': 0.15,
+    'legalEagle.rulingLikelihood': 0.25,
+    // CorporateIntel
+    'corporateIntel.earningsSurprise': 0.3,
+    'corporateIntel.analystConsensus': 0.2,
+    'corporateIntel.filingActivity': 0.15,
+    'corporateIntel.approvalPrecedent': 0.25,
   },
   trainedAt: new Date(),
   sampleSize: 0,
@@ -127,8 +190,9 @@ let currentModel: ModelWeights = DEFAULT_WEIGHTS;
  * Flatten a FeatureVector into a numeric array with named keys.
  */
 function flattenFeatures(fv: FeatureVector): Record<string, number> {
+  // priceLevel intentionally EXCLUDED — market price must not influence the model.
+  // It only enters at edge calculation: edge = cortexProbability - marketPrice.
   const flat: Record<string, number> = {
-    priceLevel: fv.priceLevel,
     bidAskSpread: fv.bidAskSpread,
     volumeRank: fv.volumeRank,
     daysToResolution: fv.daysToResolution,
@@ -163,6 +227,21 @@ function flattenFeatures(fv: FeatureVector): Record<string, number> {
   if (fv.altex) {
     for (const [k, v] of Object.entries(fv.altex)) {
       flat[`altex.${k}`] = v;
+    }
+  }
+  if (fv.weatherHawk) {
+    for (const [k, v] of Object.entries(fv.weatherHawk)) {
+      flat[`weatherHawk.${k}`] = v;
+    }
+  }
+  if (fv.legalEagle) {
+    for (const [k, v] of Object.entries(fv.legalEagle)) {
+      flat[`legalEagle.${k}`] = v;
+    }
+  }
+  if (fv.corporateIntel) {
+    for (const [k, v] of Object.entries(fv.corporateIntel)) {
+      flat[`corporateIntel.${k}`] = v;
     }
   }
 
@@ -289,6 +368,33 @@ export function trainModel(
 
   currentModel = newModel;
   return newModel;
+}
+
+/**
+ * Load model weights from persisted JSON (DB or file).
+ * Called on worker startup to restore trained model.
+ */
+export function loadModel(serialized: { intercept: number; weights: Record<string, number>; trainedAt: string; sampleSize: number; accuracy: number }): void {
+  currentModel = {
+    intercept: serialized.intercept,
+    weights: serialized.weights,
+    trainedAt: new Date(serialized.trainedAt),
+    sampleSize: serialized.sampleSize,
+    accuracy: serialized.accuracy,
+  };
+}
+
+/**
+ * Serialize current model for persistence.
+ */
+export function serializeModel(): { intercept: number; weights: Record<string, number>; trainedAt: string; sampleSize: number; accuracy: number } {
+  return {
+    intercept: currentModel.intercept,
+    weights: currentModel.weights,
+    trainedAt: currentModel.trainedAt.toISOString(),
+    sampleSize: currentModel.sampleSize,
+    accuracy: currentModel.accuracy,
+  };
 }
 
 /**

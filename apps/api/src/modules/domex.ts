@@ -10,7 +10,7 @@ import { weatherHawkAgent } from './domex-agents/weather-hawk';
 import { legalEagleAgent } from './domex-agents/legal-eagle';
 import { corporateIntelAgent } from './domex-agents/corporate-intel';
 import { predict } from '@apex/cortex';
-import type { FeatureVector, FedHawkFeatures, GeoIntelFeatures, SportsEdgeFeatures, CryptoAlphaFeatures } from '@apex/cortex';
+import type { FeatureVector, FedHawkFeatures, GeoIntelFeatures, SportsEdgeFeatures, CryptoAlphaFeatures, WeatherHawkFeatures, LegalEagleFeatures, CorporateIntelFeatures } from '@apex/cortex';
 import type { MarketCategory } from '@apex/db';
 
 // ENTERTAINMENT-SCOUT removed: no data sources, zero edge potential
@@ -178,8 +178,36 @@ export class DomexModule extends SignalModule {
           };
           break;
 
-        // WEATHER-HAWK, LEGAL-EAGLE, CORPORATE-INTEL: features stored as generic metadata
-        // but their structured features contribute to the base feature vector
+        case 'WEATHER-HAWK':
+          fv.weatherHawk = {
+            temperatureAnomaly: toNum(f.temperatureAnomaly, 0),
+            precipitationChance: toNum(f.precipitationChance ?? f.precipitation, 0.5),
+            forecastConfidence: toNum(f.forecastConfidence ?? f.confidence, 0.5),
+            severeWeatherRisk: toNum(f.severeWeatherRisk ?? f.severeRisk, 0),
+            forecastHorizonDays: toNum(f.forecastHorizonDays ?? f.horizonDays, 7),
+          };
+          break;
+
+        case 'LEGAL-EAGLE':
+          fv.legalEagle = {
+            precedentStrength: toNum(f.precedentStrength ?? f.precedent, 0.5),
+            courtLevel: toNum(f.courtLevel, 0),
+            rulingLikelihood: toNum(f.rulingLikelihood ?? f.likelihood, 0.5),
+            caseAgeMonths: toNum(f.caseAgeMonths ?? f.caseAge, 6),
+            amicusBriefs: toNum(f.amicusBriefs ?? f.amicus, 0),
+          };
+          break;
+
+        case 'CORPORATE-INTEL':
+          fv.corporateIntel = {
+            earningsSurprise: toNum(f.earningsSurprise ?? f.earningsBeat, 0),
+            analystConsensus: toNum(f.analystConsensus ?? f.consensus, 0),
+            filingActivity: toNum(f.filingActivity ?? f.secFilings, 0),
+            approvalPrecedent: toNum(f.approvalPrecedent ?? f.historicalApproval, 0.5),
+            insiderActivity: toNum(f.insiderActivity ?? f.insiderTrading, 0),
+          };
+          break;
+
         default:
           break;
       }
@@ -197,6 +225,9 @@ export class DomexModule extends SignalModule {
       hasCryptoAlpha: !!fv.cryptoAlpha,
       hasLegex: !!fv.legex,
       hasAltex: !!fv.altex,
+      hasWeatherHawk: !!fv.weatherHawk,
+      hasLegalEagle: !!fv.legalEagle,
+      hasCorporateIntel: !!fv.corporateIntel,
     };
   }
 }

@@ -2496,10 +2496,10 @@ Previous architecture asked Claude to estimate probabilities directly (anchoring
 | FED-HAWK | FINANCE | FRED (CPI, PCE, unemployment, yields, breakeven inflation, claims, sentiment), CME FedWatch | questionType, cpiTrend, laborMarketTightness, fedCommunicationTone, recentDataSurprise, cmeCutProbability, geopoliticalRisk, financialStress |
 | GEO-INTEL | POLITICS | Polling data, Congress.gov (with `estimatePassageProbability()` base rates) | questionType, pollingSpread, pollingTrend, incumbentRunning, billStage, cosponsorCount, bipartisanSupport, conflictIntensity, escalationTrend |
 | CRYPTO-ALPHA | CRYPTO | Binance WebSocket (live prices, 24h change, volume, funding rates) | priceVs30dAvg, fundingRate, exchangeNetFlow, protocolTVLTrend, majorUpgrade, regulatoryAction |
-| SPORTS-EDGE | SPORTS | None (LLM knowledge) | homeAway, restDays, injuryImpact, recentFormLast10, headToHeadRecord, playoffVsRegular, sport |
+| SPORTS-EDGE | SPORTS | The Odds API (the-odds-api.com, free tier 500 req/month) — live odds, spreads, team matchups | homeAway, restDays, injuryImpact, recentFormLast10, headToHeadRecord, playoffVsRegular, sport |
 | WEATHER-HAWK | SCIENCE | NWS API (api.weather.gov, free) | forecastLeadDays, forecastConfidence, nwsForecastAvailable, forecastedCondition, forecastedTempF, climatologicalBaseRate, modelAgreement |
 | LEGAL-EAGLE | POLITICS | CourtListener API (free, courtlistener.com) | caseType, courtLevel, oralArgumentHeld, questionPresented, circuitSplitExists, historicalReverseRate, proceduralStage |
-| CORPORATE-INTEL | FINANCE | None (LLM knowledge + base rates) | eventType, earningsSurpriseHistory, revenueGrowthTrend, analystConsensus, sectorMomentum, insiderActivity, regulatoryRisk |
+| CORPORATE-INTEL | FINANCE | Finnhub (finnhub.io, free tier 60 calls/min) — earnings dates, analyst estimates, SEC filings; OpenFDA API (free) — FDA approval tracking | eventType, earningsSurpriseHistory, revenueGrowthTrend, analystConsensus, sectorMomentum, insiderActivity, regulatoryRisk |
 
 **ENTERTAINMENT-SCOUT removed** — no data sources, zero edge potential, CULTURE markets too unpredictable.
 
@@ -2514,6 +2514,58 @@ interface DomexAgentResult {
   dataFreshness: 'live' | 'cached' | 'stale' | 'none';
 }
 ```
+
+### V2.6.1 FeatureModel Training & Learning Loop
+
+**Files:** `packages/cortex/src/feature-model.ts`, `apps/api/src/jobs/learning-loop.job.ts`
+
+**Critical architecture: Without the learning loop, every LLM credit is wasted.**
+
+The learning loop runs weekly (Sunday 2 AM UTC) and closes the feedback loop between predictions and outcomes:
+
+1. **Query resolved markets** — all markets with known outcomes from the last 180 days
+2. **Build training data** — reconstruct FeatureVector from stored signals, pair with binary outcome (YES=1, NO=0)
+3. **Retrain FeatureModel** — gradient descent logistic regression, minimum 20 samples, 100 epochs
+4. **Persist weights** — serialized to `SystemConfig.feature_model_weights` in DB
+5. **Recalibrate** — compute per-module, per-category bias corrections from signal accuracy
+6. **Persist calibration** — serialized to `SystemConfig.calibration_records` in DB
+
+**On worker startup:** Both model weights and calibration records are restored from DB via `loadModel()` and `loadCalibration()`.
+
+**Price anchoring prevention:** `priceLevel` weight is 0 in DEFAULT_WEIGHTS. Market price ONLY enters at edge calculation (`cortexProbability - marketPrice`), never as a model input. This ensures independent probability estimates.
+
+**FeatureModel typed schemas:** All 7 DOMEX agents (FED-HAWK, GEO-INTEL, CRYPTO-ALPHA, SPORTS-EDGE, WEATHER-HAWK, LEGAL-EAGLE, CORPORATE-INTEL) have typed feature interfaces mapped in `buildFeatureVector()`. No agent falls through to `default:break`.
+
+**Supporting scheduled jobs:**
+| Job | Schedule | Purpose |
+|-----|----------|---------|
+| `learning-loop` | Weekly Sun 2 AM UTC | Retrain model + recalibrate |
+| `backtest` | Weekly Sun 4 AM UTC | Populate ModuleScore records |
+| `weight-update` | Hourly | Adjust module weights from ModuleScore |
+| `paper-position-update` | Every 5 min | Update paper P&L with current prices |
+| `position-reconciliation` | Every 5 min | Close resolved positions, calculate final P&L |
+
+### V2.6.2 Paper Trade Fee Modeling
+
+**File:** `apps/api/src/services/paper-trader.ts`
+
+Paper positions now subtract estimated fees at entry to make P&L realistic:
+- **Kalshi fee model:** 7% × price × (1 - price) per contract (round-trip)
+- **BUY_YES:** entry price adjusted UP by fee (costs more to buy)
+- **BUY_NO:** entry price adjusted DOWN by fee (receive less)
+- **EDGE_ACTIONABILITY_THRESHOLD:** increased from 0.5% to 3% — edges below 3% are negative EV after Kalshi round-trip fees
+
+### V2.6.3 Data Source Requirements Per Agent
+
+| Agent | Required API Key | Env Var | Free Tier |
+|-------|-----------------|---------|-----------|
+| FED-HAWK | FRED | `FRED_API_KEY` | Unlimited |
+| GEO-INTEL | Congress.gov | `CONGRESS_API_KEY` | Unlimited |
+| CRYPTO-ALPHA | None (Binance WS) | `BINANCE_WS_ENABLED` | Unlimited |
+| SPORTS-EDGE | The Odds API | `ODDS_API_KEY` | 500 req/month |
+| WEATHER-HAWK | None (NWS) | N/A | Unlimited |
+| LEGAL-EAGLE | None (CourtListener) | N/A | Rate limited |
+| CORPORATE-INTEL | Finnhub + OpenFDA | `FINNHUB_API_KEY` | 60 calls/min |
 
 ### V2.7 Crypto Strategy Engine (CRYPTEX)
 

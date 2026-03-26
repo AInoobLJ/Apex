@@ -437,7 +437,7 @@
 
 ### Dual Mode Worker (RESEARCH / SPEED)
 
-- [x] [v2] Implement dual-mode pipeline in `apps/api/src/services/dual-mode-pipeline.ts`: classifies markets into RESEARCH (24+ hours) vs SPEED (<24 hours) based on closesAt
+- [x] [v2] ~~Implement dual-mode pipeline~~ — `dual-mode-pipeline.ts` deleted (dead code: `processMarketOpportunity` was never called). Mode classification handled directly in signal pipeline and speed pipeline jobs.
 - [x] [v2] RESEARCH mode: uses all LLM modules (COGEX, FLOWEX, LEGEX, DOMEX, ALTEX, REFLEX, SIGINT, NEXUS), 15-min cycle, SLOW_EXEC
 - [x] [v2] SPEED mode: uses math-only modules (SPEEDEX, CRYPTEX, ARBEX, FLOWEX, COGEX), 30-sec cycle, FAST_EXEC
 - [x] [v2] Add `speed-pipeline.job.ts` as separate BullMQ job for the 30-second SPEED cycle
@@ -445,8 +445,10 @@
 ### Feature Model (Logistic Regression over LLM Features)
 
 - [x] [v2] Implement `FeatureModel` in `packages/cortex/src/feature-model.ts`: logistic regression over structured LLM features
-- [x] [v2] Define 6 feature schemas: FedHawkFeatures, GeoIntelFeatures, SportsEdgeFeatures, CryptoAlphaFeatures, LegexFeatures, AltexFeatures
+- [x] [v2] Define 9 feature schemas: FedHawkFeatures, GeoIntelFeatures, SportsEdgeFeatures, CryptoAlphaFeatures, LegexFeatures, AltexFeatures, WeatherHawkFeatures, LegalEagleFeatures, CorporateIntelFeatures
 - [x] [v2] Weekly retraining on resolved markets with fallback to base rates on insufficient data
+- [x] [v2] Model persistence: `serializeModel()` / `loadModel()` for DB storage and startup restoration
+- [x] [v2] Learning loop job: automated weekly retraining + calibration + weight persistence
 
 ### Implied Volatility Model
 
@@ -498,6 +500,8 @@
 - [x] [v2] Implement FRED economic data source (`apps/api/src/services/data-sources/fred.ts`)
 - [x] [v2] Implement Congressional data source (`apps/api/src/services/data-sources/congress.ts`)
 - [x] [v2] Implement Polling data source (`apps/api/src/services/data-sources/polling.ts`)
+- [x] [v2] Implement The Odds API data source (`apps/api/src/services/data-sources/odds-api.ts`) — SPORTS-EDGE context provider
+- [x] [v2] Implement Finnhub + OpenFDA data source (`apps/api/src/services/data-sources/finnhub.ts`) — CORPORATE-INTEL context provider
 
 ### Additional Jobs & Services
 
@@ -558,6 +562,26 @@
 - [x] [FIX] MarketMatch table: matches computed ONCE during ingestion, arb-scan does zero LLM calls
 - [x] [FIX] Pipeline market scope: volume >$500, TTR 1-90 days, 6h dedup, MAX_MARKETS=10
 - [x] [FIX] Eliminated 12,600 SCREEN_MARKET calls/day ($18.50) from arb-scan LLM matching
+
+### Code Review #2 — Critical Fixes
+
+- [x] [FIX] Wire learning loop: weekly `learning-loop` job (Sun 2AM UTC) queries resolved markets, retrains FeatureModel, persists weights to DB, recalibrates module bias
+- [x] [FIX] Load persisted calibration + model weights on worker startup via `loadCalibration()` and `loadModel()`
+- [x] [FIX] Schedule `paper-position-update` every 5 min — paper positions must have current prices and P&L, not just created and forgotten
+- [x] [FIX] Schedule `position-reconciliation` every 5 min — close resolved positions, calculate final P&L
+- [x] [FIX] Schedule weekly `backtest` job (Sun 4AM UTC) — populates ModuleScore records that feed the weight-update job
+- [x] [FIX] Remove market price anchoring: `DEFAULT_WEIGHTS.priceLevel` set to 0 (removed from flattenFeatures). Model was `sigmoid(2.5 * marketPrice + noise) ≈ marketPrice`, guaranteeing edge ≈ 0
+- [x] [FIX] Add typed feature schemas for WEATHER-HAWK, LEGAL-EAGLE, CORPORATE-INTEL — their features were extracted but never mapped into the typed FeatureVector (hit `default:break`)
+- [x] [FIX] Add full weight entries for all domain agent features (FedHawk, GeoIntel, CryptoAlpha, Sports, WeatherHawk, LegalEagle, CorporateIntel) in DEFAULT_WEIGHTS
+- [x] [FIX] SPORTS-EDGE: add The Odds API (the-odds-api.com) context provider — live odds, spreads, team matchups. Without data, LLM was guessing features from title alone.
+- [x] [FIX] CORPORATE-INTEL: add Finnhub API (finnhub.io) for earnings dates, analyst estimates, SEC filings + OpenFDA API for FDA approval tracking
+- [x] [FIX] GEO-INTEL: verified `estimatePassageProbability()` is wired as context provider and returning data
+- [x] [FIX] CRYPTO-ALPHA: verified Binance/CoinGecko context provider is injecting live prices and funding rates
+- [x] [FIX] Delete dead code: `dual-mode-pipeline.ts` `processMarketOpportunity()` was never called — removed entire file
+- [x] [FIX] Paper trade fee modeling: `enterPaperPosition` now subtracts estimated Kalshi fees (7% × price × (1-price)) from entry price. Without fees, paper results overstated performance by 2-7%.
+- [x] [FIX] Increase `EDGE_ACTIONABILITY_THRESHOLD` from 0.005 (0.5%) to 0.03 (3%) — after Kalshi fees (~7% round trip), 0.5% edge is negative EV
+- [x] [FIX] Increase `EDGE_HIGH_THRESHOLD` from 0.03 to 0.05 for stronger signal quality
+- [x] [FIX] Add `ODDS_API_KEY` and `FINNHUB_API_KEY` to .env.example and config.ts
 
 ### Discussed But Not Built
 

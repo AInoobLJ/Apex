@@ -13,6 +13,9 @@ import { handleSigintJob } from './sigint.job';
 import { handleNexusJob } from './nexus.job';
 import { handleSpeedPipeline } from './speed-pipeline.job';
 import { handleBackup } from './backup.job';
+import { handleLearningLoop } from './learning-loop.job';
+import { handleBacktest } from './backtest.job';
+import { handlePaperPositionUpdate, handlePositionReconciliation } from './paper-positions.job';
 
 /**
  * Wrap any job handler in try/catch so a single job failure
@@ -126,6 +129,14 @@ export function startWorkers() {
           return safeHandler('weight-update', handleWeightUpdate)(job);
         case 'backup':
           return safeHandler('backup', handleBackup)(job);
+        case 'learning-loop':
+          return safeHandler('learning-loop', handleLearningLoop)(job);
+        case 'backtest':
+          return safeHandler('backtest', handleBacktest)(job);
+        case 'paper-position-update':
+          return safeHandler('paper-position-update', handlePaperPositionUpdate)(job);
+        case 'position-reconciliation':
+          return safeHandler('position-reconciliation', handlePositionReconciliation)(job);
         default:
           logger.warn({ jobName: job.name }, 'Unknown maintenance job');
       }

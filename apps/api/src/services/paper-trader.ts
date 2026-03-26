@@ -2,9 +2,19 @@ import { syncPrisma as prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import type { EdgeOutput } from '@apex/shared';
 
+// Kalshi fee model: ~3.5% per side (7% round trip).
+// Fee = 7% × price × (1 - price) per contract.
+// Subtract estimated entry fee from entry price to make paper P&L realistic.
+const KALSHI_FEE_RATE = 0.07;
+
+function estimateEntryFee(price: number): number {
+  return KALSHI_FEE_RATE * price * (1 - price);
+}
+
 /**
  * PaperTrader: auto-enters paper position for every actionable edge.
  * Paper positions track what would happen if we followed every signal.
+ * Entry price is adjusted for estimated fees so paper P&L reflects real trading costs.
  */
 export async function enterPaperPosition(edge: EdgeOutput, fairValue?: number, daysToResolution?: number): Promise<string | null> {
   if (!edge.isActionable) return null;
@@ -15,12 +25,19 @@ export async function enterPaperPosition(edge: EdgeOutput, fairValue?: number, d
   });
   if (existing) return null; // Don't duplicate
 
+  // Adjust entry price for fees: buying costs more, selling gets less
+  const rawPrice = edge.marketPrice;
+  const fee = estimateEntryFee(rawPrice);
+  const adjustedEntryPrice = edge.edgeDirection === 'BUY_YES'
+    ? rawPrice + fee   // pay more when buying
+    : rawPrice - fee;  // receive less when selling
+
   const position = await prisma.paperPosition.create({
     data: {
       marketId: edge.marketId,
       direction: edge.edgeDirection,
-      entryPrice: edge.marketPrice,
-      currentPrice: edge.marketPrice,
+      entryPrice: adjustedEntryPrice,
+      currentPrice: rawPrice,
       kellySize: edge.kellySize || edge.expectedValue * 100, // fallback sizing
       edgeAtEntry: edge.edgeMagnitude,
       confidenceAtEntry: edge.confidence,
@@ -33,8 +50,10 @@ export async function enterPaperPosition(edge: EdgeOutput, fairValue?: number, d
     positionId: position.id,
     marketId: edge.marketId,
     direction: edge.edgeDirection,
-    entryPrice: edge.marketPrice,
-  }, 'Paper position entered');
+    rawPrice,
+    adjustedEntryPrice,
+    fee,
+  }, 'Paper position entered (fee-adjusted)');
 
   return position.id;
 }

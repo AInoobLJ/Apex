@@ -79,6 +79,38 @@ export async function registerJobs() {
     { name: 'weight-update' }
   );
 
+  // ─ Learning Loop: weekly model retraining + calibration ─
+  // Runs Sunday 2 AM UTC — processes all resolved markets, retrains FeatureModel,
+  // updates calibration table. Without this, every LLM credit is wasted.
+  await maintenanceQueue.upsertJobScheduler(
+    'learning-loop',
+    { pattern: '0 2 * * 0' }, // Sunday 2 AM UTC
+    { name: 'learning-loop' }
+  );
+
+  // ─ Weekly backtest: populates ModuleScore records for weight-update ─
+  await maintenanceQueue.upsertJobScheduler(
+    'backtest',
+    { pattern: '0 4 * * 0' }, // Sunday 4 AM UTC (after learning loop)
+    { name: 'backtest' }
+  );
+
+  // ─ Paper position updates: every 5 min ─
+  // Keeps paper P&L current with live market prices
+  await maintenanceQueue.upsertJobScheduler(
+    'paper-position-update',
+    { every: 300000 }, // 5 minutes
+    { name: 'paper-position-update' }
+  );
+
+  // ─ Position reconciliation: every 5 min ─
+  // Closes resolved positions, calculates final P&L
+  await maintenanceQueue.upsertJobScheduler(
+    'position-reconciliation',
+    { every: 300000 }, // 5 minutes
+    { name: 'position-reconciliation' }
+  );
+
   // Nightly Postgres backup: 3 AM UTC (11 PM ET)
   await maintenanceQueue.upsertJobScheduler(
     'backup',
@@ -106,9 +138,11 @@ export async function registerJobs() {
       'market-sync (5m)', 'orderbook-sync (5m)', 'news-ingest (5m)',
       'signal-pipeline/RESEARCH (15m)', 'speed-pipeline/SPEED (30s)', 'arb-scan (60s)',
       'sigint-profiling (1h)', 'nexus-graph (6h)',
+      'learning-loop (weekly Sun 2AM)', 'backtest (weekly Sun 4AM)',
+      'paper-position-update (5m)', 'position-reconciliation (5m)',
       'daily-digest (8AM ET)', 'data-retention (24h)', 'weight-update (1h)', 'backup (3AM UTC)',
     ],
-  }, 'Registered all repeatable jobs (RESEARCH + SPEED dual mode)');
+  }, 'Registered all repeatable jobs (RESEARCH + SPEED dual mode + learning loop)');
 }
 
 // ── Get Queue Stats ──

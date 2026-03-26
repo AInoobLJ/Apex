@@ -2,10 +2,10 @@
 export { MODULE_IDS, MODULE_HALF_LIVES, DEFAULT_WEIGHTS } from './types';
 
 // ── Edge Thresholds ──
-// Lower threshold while building paper trade history. Raise back to 0.03 once
-// we have enough resolved positions to validate edge quality.
-export const EDGE_ACTIONABILITY_THRESHOLD = 0.005; // 0.5% EV — will paper trade more, validate signal quality
-export const EDGE_HIGH_THRESHOLD = 0.03;
+// After Kalshi fees (~3.5% per side, ~7% round trip), edges below 3% are negative EV.
+// Paper trading at 0.5% produced misleading positive results. Minimum 3% for actionability.
+export const EDGE_ACTIONABILITY_THRESHOLD = 0.03; // 3% EV minimum — covers Kalshi round-trip fees
+export const EDGE_HIGH_THRESHOLD = 0.05;           // 5% EV — strong signal
 
 // ── Market Categories ──
 export const MARKET_CATEGORIES = ['POLITICS', 'FINANCE', 'CRYPTO', 'SCIENCE', 'SPORTS', 'CULTURE', 'OTHER'] as const;

@@ -12,6 +12,7 @@ import { syncPrisma } from './lib/prisma';
 import { redis } from './lib/redis';
 import { registerJobs } from './jobs/queue';
 import { startWorkers } from './jobs/workers';
+import { loadCalibration, loadModel } from '@apex/cortex';
 
 // ─── Global error handlers — NEVER let the process crash ───
 process.on('uncaughtException', (err) => {
@@ -62,10 +63,31 @@ async function main() {
     logger.error({ err: err.message }, 'Postgres connection failed — will retry on first job');
   }
 
+  // ─── Restore persisted model + calibration on startup ───
+  try {
+    const modelConfig = await syncPrisma.systemConfig.findUnique({ where: { key: 'feature_model_weights' } });
+    if (modelConfig?.value) {
+      loadModel(JSON.parse(modelConfig.value));
+      logger.info('FeatureModel weights restored from DB');
+    }
+  } catch (err: any) {
+    logger.warn({ err: err.message }, 'Failed to load FeatureModel weights — using defaults');
+  }
+
+  try {
+    const calConfig = await syncPrisma.systemConfig.findUnique({ where: { key: 'calibration_records' } });
+    if (calConfig?.value) {
+      loadCalibration(JSON.parse(calConfig.value));
+      logger.info('Calibration records restored from DB');
+    }
+  } catch (err: any) {
+    logger.warn({ err: err.message }, 'Failed to load calibration records — starting fresh');
+  }
+
   const workers = startWorkers();
   await registerJobs();
 
-  logger.info('Worker running — processing sync, arb scan, and signal jobs');
+  logger.info('Worker running — processing sync, arb scan, signal, and learning loop jobs');
 
   // Send startup Telegram alert
   await sendTelegramAlert('🚀 APEX worker started. All systems operational.');

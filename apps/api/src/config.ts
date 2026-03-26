@@ -32,6 +32,8 @@ const envSchema = z.object({
   BINANCE_WS_ENABLED: z.coerce.boolean().default(false), // Binance.com blocked in US — use CoinGecko fallback
   FRED_API_KEY: z.string().default(''),
   CONGRESS_API_KEY: z.string().default(''),
+  ODDS_API_KEY: z.string().default(''),       // The Odds API (the-odds-api.com) — free tier
+  FINNHUB_API_KEY: z.string().default(''),     // Finnhub (finnhub.io) — free tier
 
   // Server
   PORT: z.coerce.number().default(3001),
