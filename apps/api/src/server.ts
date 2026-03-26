@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import { logger } from './lib/logger';
 import corsPlugin from './plugins/cors';
 import authPlugin from './plugins/auth';
@@ -22,6 +23,11 @@ export async function buildServer() {
   });
 
   // Register plugins
+  await server.register(rateLimit, {
+    max: 100,           // 100 requests per minute per API key
+    timeWindow: '1 minute',
+    keyGenerator: (request) => (request.headers['x-api-key'] as string) || request.ip,
+  });
   await server.register(corsPlugin);
   await server.register(authPlugin);
   await server.register(websocketPlugin);

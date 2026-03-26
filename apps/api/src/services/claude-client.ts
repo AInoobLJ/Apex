@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import Bottleneck from 'bottleneck';
 import { config } from '../config';
@@ -46,14 +47,17 @@ export function recordSchedulingSaving() {
 }
 
 // Reset daily at midnight
-const resetDate = new Date().toDateString();
+let resetDate = new Date().toDateString();
 function checkDailyReset() {
-  if (new Date().toDateString() !== resetDate) {
+  const today = new Date().toDateString();
+  if (today !== resetDate) {
     cacheHits = 0;
     cacheMisses = 0;
     callsSavedByCache = 0;
     callsSavedByScheduling = 0;
     estimatedSavingsToday = 0;
+    resetDate = today; // Update so we don't reset on every call after midnight
+    resultCache.clear(); // Clear cache on new day
   }
 }
 
@@ -85,13 +89,7 @@ export interface ClaudeResponse<T> {
 const resultCache = new Map<string, { response: any; expiresAt: number }>();
 
 function hashString(s: string): string {
-  let hash = 0;
-  for (let i = 0; i < s.length; i++) {
-    const char = s.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash |= 0; // Convert to 32bit integer
-  }
-  return hash.toString(36);
+  return createHash('sha256').update(s).digest('hex').slice(0, 16);
 }
 
 /**

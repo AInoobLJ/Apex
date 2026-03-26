@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx turbo:*)",
+      "Bash(docker compose:*)",
+      "Bash(npx prisma:*)",
+      "Bash(npm install:*)",
+      "Bash(npx vitest:*)",
+      "Bash(node -e \"const z = require\\(''zod''\\); console.log\\(z.string\\(\\).url\\(\\).safeParse\\(''postgresql://test:test@localhost:5432/test''\\)\\)\")",
+      "Bash(curl -s http://localhost:3001/api/v1/system/health)",
+      "Bash(npx tsx:*)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=2\")",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=1\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\)[0]; print\\([k for k in d.keys\\(\\)]\\)\")",
+      "Bash(python3 -c \":*)",
+      "Bash(curl -s -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/markets?limit=3\")",
+      "Bash(curl -s -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/system/jobs\")",
+      "Bash(curl -s -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/markets?limit=5\")",
+      "Bash(curl -s -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/system/health\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d[''''checks''''], indent=2\\)\\)\")",
+      "Bash(python3 -c \"import sys,json; [print\\(f''''{q[\"\"name\"\"]}: active={q[\"\"active\"\"]} completed={q[\"\"completed\"\"]} failed={q[\"\"failed\"\"]}''''\\) for q in json.load\\(sys.stdin\\)[''''queues'''']]\")",
+      "Bash(PGPASSWORD=apex psql -h localhost -U apex -d apex -c \"SELECT count\\(*\\) FROM \"\"Market\"\";\")",
+      "Bash(docker exec:*)",
+      "Bash(python3 -c \"import sys,json; [print\\(f''''{q[\"\"name\"\"]}: active={q[\"\"active\"\"]} completed={q[\"\"completed\"\"]} failed={q[\"\"failed\"\"]} waiting={q[\"\"waiting\"\"]}''''\\) for q in json.load\\(sys.stdin\\)[''''queues'''']]\")",
+      "Bash(curl -s -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/markets?limit=3&sort=volume&direction=desc\")",
+      "Bash(curl -s -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/markets?limit=5&sort=volume&direction=desc\")",
+      "Bash(curl -s -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/markets/cmn58i0gi34lpoqdkij3f0p4p\")",
+      "Bash(1 __NEW_LINE_3a08885a26780414__ curl -s -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/markets/cmn58i0gi34lpoqdkij3f0p4p/prices\")",
+      "Bash(curl -s -H \"KALSHI-ACCESS-KEY: 46db6e74-1883-4562-8bd6-ba965cc26357\" \"https://api.elections.kalshi.com/trade-api/v2/markets?limit=1&status=open\")",
+      "Bash(curl -s \"https://api.elections.kalshi.com/trade-api/v2/markets?limit=1&status=open\")",
+      "Bash(python3 -c \"import sys,json; [print\\(f''''{q[\"\"name\"\"]}: active={q[\"\"active\"\"]} waiting={q[\"\"waiting\"\"]} completed={q[\"\"completed\"\"]}''''\\) for q in json.load\\(sys.stdin\\)[''''queues'''']]\")",
+      "Bash(curl -s -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/markets?limit=3&platform=KALSHI&sort=volume&direction=desc\")",
+      "Bash(time curl:*)",
+      "Bash(lsof -ti:3001)",
+      "Bash(curl -s --max-time 5 -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/system/health\")",
+      "Bash(curl -v --max-time 5 \"http://localhost:3001/api/v1/system/health\")",
+      "Bash(curl -s --max-time 5 -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/markets?limit=1\")"
+    ]
+  }
+}

@@ -171,32 +171,39 @@ export class ExecutionManager {
       size: arb.leg2.size,
     };
 
-    // Place both legs simultaneously
-    const [leg1Result, leg2Result] = await Promise.all([
-      executor1.placeOrder(leg1Request),
-      executor2.placeOrder(leg2Request),
-    ]);
+    // Sequential execution: place leg 1 first, only proceed to leg 2 if leg 1 fills.
+    // This prevents orphaned positions from simultaneous execution.
+    const leg1Result = await executor1.placeOrder(leg1Request);
 
-    // If one failed, try to cancel the other
-    if (leg1Result.status === 'FAILED' && leg2Result.status !== 'FAILED' && leg2Result.orderId) {
-      try { await executor2.cancelOrder(leg2Result.orderId); } catch { /* best effort */ }
-      return { leg1: leg1Result, leg2: leg2Result, status: 'FAILED' };
+    if (leg1Result.status === 'FAILED') {
+      const leg2Fail: OrderResult = {
+        orderId: '', platform: arb.leg2.platform, status: 'FAILED',
+        filledPrice: null, filledSize: null, fee: 0, latencyMs: 0,
+        errorMessage: 'Skipped: leg 1 failed',
+      };
+      return { leg1: leg1Result, leg2: leg2Fail, status: 'FAILED' };
     }
 
-    if (leg2Result.status === 'FAILED' && leg1Result.status !== 'FAILED' && leg1Result.orderId) {
-      try { await executor1.cancelOrder(leg1Result.orderId); } catch { /* best effort */ }
-      return { leg1: leg1Result, leg2: leg2Result, status: 'FAILED' };
+    // Leg 1 succeeded — now place leg 2
+    const leg2Result = await executor2.placeOrder(leg2Request);
+
+    if (leg2Result.status === 'FAILED') {
+      // Leg 2 failed — close leg 1 to prevent orphaned position
+      if (leg1Result.orderId) {
+        try {
+          await executor1.cancelOrder(leg1Result.orderId);
+        } catch (err) {
+          // CRITICAL: orphaned leg 1 — log for reconciliation
+          console.error(`ORPHANED ARB LEG: ${leg1Result.orderId} on ${arb.leg1.platform} — manual reconciliation required`);
+        }
+      }
+      return { leg1: leg1Result, leg2: leg2Result, status: 'PARTIAL' };
     }
 
-    if (leg1Result.status === 'FAILED' && leg2Result.status === 'FAILED') {
-      return { leg1: leg1Result, leg2: leg2Result, status: 'FAILED' };
-    }
-
-    const bothFilled = leg1Result.status === 'FILLED' && leg2Result.status === 'FILLED';
     return {
       leg1: leg1Result,
       leg2: leg2Result,
-      status: bothFilled ? 'BOTH_FILLED' : 'PARTIAL',
+      status: leg1Result.status === 'FILLED' && leg2Result.status === 'FILLED' ? 'BOTH_FILLED' : 'PARTIAL',
     };
   }
 

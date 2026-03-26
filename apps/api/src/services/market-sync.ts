@@ -33,8 +33,9 @@ async function syncAdapter(adapter: PredictionMarketAdapter): Promise<number> {
       const normalized = adapter.normalizeMarket(toSync[i]);
       await upsertNormalizedMarket(normalized);
       synced++;
-    } catch {
+    } catch (err) {
       errors++;
+      if (errors <= 3) logger.debug({ err: (err as Error).message, marketIndex: i, platform: platformName }, 'Market sync upsert failed');
     }
     // Yield event loop every 20 markets so API can respond
     if (i % 20 === 0) await new Promise(r => setImmediate(r));
@@ -140,7 +141,7 @@ export async function runMarketSync(): Promise<Record<string, number>> {
         const normalized = kalshiClient.normalizeMarket(kalshiClient.toRawMarket(raw));
         await upsertNormalizedMarket(normalized);
         cryptoSynced++;
-      } catch { /* skip */ }
+      } catch (err) { logger.debug({ err: (err as Error).message }, 'Crypto market sync upsert failed'); }
     }
     syncResults['kalshi_crypto'] = cryptoSynced;
     logger.info({ cryptoSynced }, 'Kalshi crypto series synced');
