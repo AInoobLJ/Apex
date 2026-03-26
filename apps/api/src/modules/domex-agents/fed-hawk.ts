@@ -6,6 +6,7 @@ export const fedHawkAgent = createDomexAgent({
   name: 'FED-HAWK',
   promptFile: 'domex-fed-hawk.md',
   categories: ['FINANCE'],
+  task: 'DOMEX_FEATURE_EXTRACT',
   contextProvider: async () => {
     const [fredData, fedwatchData] = await Promise.allSettled([
       getFredData(),
@@ -13,10 +14,19 @@ export const fedHawkAgent = createDomexAgent({
     ]);
 
     const parts: string[] = [];
-    if (fredData.status === 'fulfilled') parts.push(formatFredContext(fredData.value));
+    const sources: string[] = [];
+    if (fredData.status === 'fulfilled') {
+      parts.push(formatFredContext(fredData.value));
+      sources.push('FRED');
+    }
     if (fedwatchData.status === 'fulfilled' && fedwatchData.value.length > 0) {
       parts.push(formatFedWatchContext(fedwatchData.value));
+      sources.push('CME FedWatch');
     }
-    return parts.join('\n\n');
+    return {
+      context: parts.join('\n\n'),
+      freshness: sources.length > 0 ? 'cached' as const : 'none' as const,
+      sources,
+    };
   },
 });

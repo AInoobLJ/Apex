@@ -131,7 +131,8 @@ export function cacheResult<T>(task: string, userMessage: string, systemPrompt: 
 export const CACHE_TTLS: Record<string, number> = {
   LEGEX_ANALYSIS: 24 * 60 * 60 * 1000,  // 24 hours — resolution criteria don't change
   REFLEX_ANALYSIS: 24 * 60 * 60 * 1000, // 24 hours — reflexivity is slow-moving
-  DOMEX_AGENT: 6 * 60 * 60 * 1000,      // 6 hours
+  DOMEX_AGENT: 6 * 60 * 60 * 1000,      // 6 hours (legacy)
+  DOMEX_FEATURE_EXTRACT: 6 * 60 * 60 * 1000, // 6 hours — features don't change fast
   ALTEX_ANALYSIS: 4 * 60 * 60 * 1000,   // 4 hours
   SCREEN_MARKET: 12 * 60 * 60 * 1000,   // 12 hours — screening result stable
   SCREEN_NEWS: 30 * 60 * 1000,          // 30 minutes

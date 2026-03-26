@@ -18,7 +18,7 @@ const DEFAULT_WEIGHTS: Record<string, number> = {
   ALTEX: 0.15, REFLEX: 0.05, SPEEDEX: 0.25, ARBEX: 0.20,
   SIGINT: 0.10, NEXUS: 0.05, CRYPTEX: 0.15,
   'SPORTS-EDGE': 0.20, 'WEATHER-HAWK': 0.15, 'LEGAL-EAGLE': 0.15,
-  'CORPORATE-INTEL': 0.15, 'ENTERTAINMENT-SCOUT': 0.10,
+  'CORPORATE-INTEL': 0.15,
 };
 
 export async function fuseSignals(marketId: string, category: string): Promise<FusedSignal | null> {

@@ -537,6 +537,20 @@
 - [x] [FIX] Signal pipeline pre-filters extreme-price markets (< 5¢ or > 95¢) before processing
 - [x] [FIX] Missing database tables synced via `prisma db push` (15 of 27 models were missing)
 
+### DOMEX Overhaul (Feature Extraction Architecture)
+
+- [x] [FIX] CRITICAL: Remove market price from ALL DOMEX agent prompts — agents now NEVER see `Current YES price`, preventing anchoring bias
+- [x] [FIX] Kill ENTERTAINMENT-SCOUT agent — deleted agent file, prompt file, removed from routing and weights. Zero edge potential with no data sources.
+- [x] [FIX] Wire Binance WebSocket live crypto data into CRYPTO-ALPHA context provider (prices, 24h change, volume, funding rates)
+- [x] [FIX] Wire `estimatePassageProbability()` from congress.ts into GEO-INTEL for legislation markets — provides calibrated base rates by bill stage
+- [x] [FIX] Demote DOMEX agent LLM calls from TIER_2 (Sonnet) to TIER_1 (Haiku) via new `DOMEX_FEATURE_EXTRACT` task — ~75% cost reduction
+- [x] [FIX] Rewrite DomexAgentResult interface: `{ features: Record<string, ...>, reasoning, dataSourcesUsed, dataFreshness }` — no more probability/confidence from agents
+- [x] [FIX] Rewrite ALL 7 agent prompts for structured feature extraction (not probability estimation)
+- [x] [FIX] Change DOMEX aggregation: agent feature vectors → FeatureModel logistic regression → calibrated probability (replaces trimmed-mean of probabilities)
+- [x] [FIX] Add NWS Weather API (api.weather.gov) context provider for WEATHER-HAWK — forecast IS the answer for short-range weather
+- [x] [FIX] Add CourtListener API (courtlistener.com) context provider for LEGAL-EAGLE — free case law search
+- [x] [FIX] Expand FRED series: T5YIE (breakeven inflation), ICSA (initial claims), UMCSENT (consumer sentiment)
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)

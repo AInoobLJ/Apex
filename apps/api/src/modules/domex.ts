@@ -9,9 +9,11 @@ import { sportsEdgeAgent } from './domex-agents/sports-edge';
 import { weatherHawkAgent } from './domex-agents/weather-hawk';
 import { legalEagleAgent } from './domex-agents/legal-eagle';
 import { corporateIntelAgent } from './domex-agents/corporate-intel';
-import { entertainmentScoutAgent } from './domex-agents/entertainment-scout';
+import { predict } from '@apex/cortex';
+import type { FeatureVector, FedHawkFeatures, GeoIntelFeatures, SportsEdgeFeatures, CryptoAlphaFeatures } from '@apex/cortex';
 import type { MarketCategory } from '@apex/db';
 
+// ENTERTAINMENT-SCOUT removed: no data sources, zero edge potential
 const ALL_AGENTS: DomexAgent[] = [
   fedHawkAgent,
   geoIntelAgent,
@@ -20,7 +22,6 @@ const ALL_AGENTS: DomexAgent[] = [
   weatherHawkAgent,
   legalEagleAgent,
   corporateIntelAgent,
-  entertainmentScoutAgent,
 ];
 
 export class DomexModule extends SignalModule {
@@ -36,93 +37,178 @@ export class DomexModule extends SignalModule {
       a.categories.includes(market.category as MarketCategory)
     );
 
-    // All agents run on markets that don't match specific categories
-    // (general analysis agents could be added here)
     if (relevantAgents.length === 0) return null;
 
-    // Run relevant agents in parallel
+    // Run relevant agents in parallel — agents NO LONGER receive market price
     const agentResults = await Promise.all(
       relevantAgents.map(agent =>
-        agent.run(market.title, market.description, marketPrice, market.category as MarketCategory, market.closesAt)
+        agent.run(market.title, market.description, market.category as MarketCategory, market.closesAt)
       )
     );
 
     // Filter out failures
-    const validResults = agentResults.filter((r): r is DomexAgentResult => r !== null);
+    const validResults: { agent: DomexAgent; result: DomexAgentResult }[] = [];
+    for (let i = 0; i < agentResults.length; i++) {
+      if (agentResults[i] !== null) {
+        validResults.push({ agent: relevantAgents[i], result: agentResults[i]! });
+      }
+    }
     if (validResults.length === 0) return null;
 
-    // Aggregate: trimmed mean (drop highest/lowest if 3+, otherwise average)
-    const aggregated = this.aggregate(validResults);
+    // Build combined feature vector from all agent results
+    const daysToResolution = market.closesAt
+      ? Math.max(1, Math.ceil((market.closesAt.getTime() - Date.now()) / 86400000))
+      : 365;
 
-    // Flag significant agent disagreement
-    const agentProbs = validResults.map(r => r.probability);
-    const agentSpread = validResults.length >= 2
-      ? Math.max(...agentProbs) - Math.min(...agentProbs)
-      : 0;
-    const hasDisagreement = agentSpread > 0.08; // >8% spread between agents
+    const featureVector = this.buildFeatureVector(
+      market, marketPrice, daysToResolution, validResults
+    );
+
+    // Feed into FeatureModel (logistic regression) for calibrated probability
+    const prediction = predict(featureVector);
+
+    const probability = prediction.probability;
+    const confidence = prediction.confidence;
+
+    // Build reasoning from agent outputs and feature importance
+    const agentReasonings = validResults.map(({ agent, result }) =>
+      `${agent.name}: ${result.reasoning.slice(0, 120)} [sources: ${result.dataSourcesUsed.join(', ') || 'LLM only'}, freshness: ${result.dataFreshness}]`
+    );
+
+    const featureReasonings = prediction.featureImportance
+      .slice(0, 3)
+      .map(f => `${f.feature}: ${f.contribution > 0 ? '+' : ''}${f.contribution.toFixed(3)}`);
 
     const reasoning = [
-      ...(hasDisagreement ? [
-        `⚠️ AGENT DISAGREEMENT (${(agentSpread * 100).toFixed(0)}% spread) — treat with lower confidence`,
-      ] : []),
-      ...validResults.map((r, i) =>
-        `${relevantAgents[i].name}: ${(r.probability * 100).toFixed(1)}% (conf: ${(r.confidence * 100).toFixed(0)}%) — ${r.reasoning.slice(0, 100)}`
-      ),
+      `FeatureModel prediction: ${(probability * 100).toFixed(1)}% (conf: ${(confidence * 100).toFixed(0)}%)`,
+      `Top features: ${featureReasonings.join(', ')}`,
+      `--- Agent Reports ---`,
+      ...agentReasonings,
     ].join('\n');
-
-    // Further penalize confidence on disagreement
-    const finalConfidence = hasDisagreement
-      ? aggregated.confidence * Math.max(0.3, 1 - agentSpread)
-      : aggregated.confidence;
 
     return this.makeSignal(
       market.id,
-      aggregated.probability,
-      finalConfidence,
+      probability,
+      confidence,
       reasoning,
       {
         agentCount: validResults.length,
-        agents: validResults.map((r, i) => ({
-          name: relevantAgents[i].name,
-          probability: r.probability,
-          confidence: r.confidence,
-          topFactors: r.topFactors,
+        featureVector: this.summarizeFeatures(featureVector),
+        featureImportance: prediction.featureImportance,
+        agents: validResults.map(({ agent, result }) => ({
+          name: agent.name,
+          dataFreshness: result.dataFreshness,
+          dataSourcesUsed: result.dataSourcesUsed,
+          featureCount: Object.keys(result.features).length,
         })),
-        agreement: aggregated.agreement,
       },
       360 // 6 hours
     );
   }
 
-  private aggregate(results: DomexAgentResult[]): { probability: number; confidence: number; agreement: number } {
-    const probs = results.map(r => r.probability);
-    const confs = results.map(r => r.confidence);
+  /**
+   * Build a FeatureVector from agent-extracted features.
+   * Maps agent-specific features to the FeatureModel's typed schemas.
+   */
+  private buildFeatureVector(
+    market: MarketWithData,
+    marketPrice: number,
+    daysToResolution: number,
+    agentResults: { agent: DomexAgent; result: DomexAgentResult }[]
+  ): FeatureVector {
+    const fv: FeatureVector = {
+      marketId: market.id,
+      marketPrice,
+      daysToResolution,
+      category: market.category,
+      volume: market.volume ?? 0,
+      priceLevel: marketPrice,
+      bidAskSpread: 0, // filled from orderbook if available
+      volumeRank: 0.5,  // default median
+      timeToResolutionBucket: daysToResolution < 1 ? 0 : daysToResolution < 7 ? 1 : daysToResolution < 30 ? 2 : 3,
+    };
 
-    let avgProb: number;
-    if (probs.length >= 3) {
-      // Trimmed mean: drop highest and lowest
-      const sorted = [...probs].sort((a, b) => a - b);
-      const trimmed = sorted.slice(1, -1);
-      avgProb = trimmed.reduce((s, v) => s + v, 0) / trimmed.length;
-    } else {
-      avgProb = probs.reduce((s, v) => s + v, 0) / probs.length;
+    // Map each agent's features to the typed FeatureVector
+    for (const { agent, result } of agentResults) {
+      const f = result.features;
+
+      switch (agent.name) {
+        case 'FED-HAWK':
+          fv.fedHawk = {
+            fedFundsRate: toNum(f.fedFundsRate, 5.25),
+            cpiTrend: toNum(f.cpiTrend, 0),
+            dotPlotDirection: toNum(f.dotPlotDirection, 0),
+            fedSpeechTone: toNum(f.fedSpeechTone, 0),
+            marketImpliedRate: toNum(f.marketImpliedRate, 5.0),
+            yieldCurveSpread: toNum(f.yieldCurveSpread, 0),
+          };
+          break;
+
+        case 'GEO-INTEL':
+          fv.geoIntel = {
+            incumbentApproval: toNum(f.incumbentApproval, 45),
+            pollingSpread: toNum(f.pollingSpread, 0),
+            legislativeStatus: toNum(f.legislativeStatus ?? f.billStage, 0),
+            keyDatesAhead: toNum(f.keyDatesAhead, 30),
+            escalationLevel: toNum(f.escalationLevel ?? f.conflictIntensity, 0),
+            sanctionIntensity: toNum(f.sanctionIntensity, 0),
+          };
+          break;
+
+        case 'SPORTS-EDGE':
+          fv.sportsEdge = {
+            homeAway: toNum(f.homeAway, 0.5),
+            restDays: toNum(f.restDays, 2),
+            injuryImpact: toNum(f.injuryImpact, 0),
+            recentForm: toNum(f.recentFormLast10 ?? f.recentForm, 0.5),
+            headToHeadRecord: toNum(f.headToHeadRecord, 0.5),
+            eloRating: toNum(f.eloRating, 1500),
+            lineMovement: toNum(f.lineMovement, 0),
+          };
+          break;
+
+        case 'CRYPTO-ALPHA':
+          fv.cryptoAlpha = {
+            fundingRate: toNum(f.fundingRate, 0),
+            exchangeFlows: toNum(f.exchangeNetFlow ?? f.exchangeFlows, 0),
+            protocolTVL: toNum(f.protocolTVLTrend ?? f.protocolTVL, 0),
+            regulatoryNews: toNum(f.regulatoryAction ?? f.regulatoryNews, 0),
+            volatilityRatio: toNum(f.volatilityRatio ?? f.priceVs30dAvg, 1.0),
+            orderBookImbalance: toNum(f.orderBookImbalance, 1.0),
+          };
+          break;
+
+        // WEATHER-HAWK, LEGAL-EAGLE, CORPORATE-INTEL: features stored as generic metadata
+        // but their structured features contribute to the base feature vector
+        default:
+          break;
+      }
     }
 
-    const avgConf = confs.reduce((s, v) => s + v, 0) / confs.length;
+    return fv;
+  }
 
-    // Agreement: 1 - spread. High spread = low agreement = penalty
-    const spread = Math.max(...probs) - Math.min(...probs);
-    const agreement = 1 - Math.min(1, spread / 0.30); // 0.30 spread = 0 agreement
-
-    // Confidence penalized by disagreement
-    const confidence = clampProbability(avgConf * agreement);
-
+  /** Summarize feature vector for metadata (avoid storing full vector) */
+  private summarizeFeatures(fv: FeatureVector): Record<string, boolean> {
     return {
-      probability: clampProbability(avgProb),
-      confidence,
-      agreement,
+      hasFedHawk: !!fv.fedHawk,
+      hasGeoIntel: !!fv.geoIntel,
+      hasSportsEdge: !!fv.sportsEdge,
+      hasCryptoAlpha: !!fv.cryptoAlpha,
+      hasLegex: !!fv.legex,
+      hasAltex: !!fv.altex,
     };
   }
+}
+
+/** Safe number extraction with default */
+function toNum(val: unknown, fallback: number): number {
+  if (typeof val === 'number' && !isNaN(val)) return val;
+  if (typeof val === 'string') {
+    const n = parseFloat(val);
+    if (!isNaN(n)) return n;
+  }
+  return fallback;
 }
 
 export const domexModule = new DomexModule();

@@ -5,6 +5,7 @@ export type LLMTask =
   | 'SCREEN_MARKET'
   | 'LEGEX_ANALYSIS'
   | 'DOMEX_AGENT'
+  | 'DOMEX_FEATURE_EXTRACT'
   | 'ALTEX_ANALYSIS'
   | 'ALTEX_CHINESE'
   | 'NEXUS_CAUSAL'
@@ -52,6 +53,7 @@ const TASK_TIER_MAP: Record<LLMTask, LLMTier> = {
   SCREEN_MARKET: 'TIER_1',
   LEGEX_ANALYSIS: 'TIER_2',
   DOMEX_AGENT: 'TIER_2',
+  DOMEX_FEATURE_EXTRACT: 'TIER_1',  // Feature extraction uses Haiku (~75% cost reduction)
   ALTEX_ANALYSIS: 'TIER_2',
   ALTEX_CHINESE: 'TIER_2',
   NEXUS_CAUSAL: 'TIER_2',

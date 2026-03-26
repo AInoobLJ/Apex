@@ -4,4 +4,5 @@ export const corporateIntelAgent = createDomexAgent({
   name: 'CORPORATE-INTEL',
   promptFile: 'domex-corporate-intel.md',
   categories: ['FINANCE'],
+  task: 'DOMEX_FEATURE_EXTRACT',
 });

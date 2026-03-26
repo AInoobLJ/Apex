@@ -4,7 +4,7 @@ import { logger } from '../../lib/logger';
 const FRED_BASE = 'https://api.stlouisfed.org/fred/series/observations';
 const FRED_API_KEY = process.env.FRED_API_KEY || '';
 
-// Series we track for FED-HAWK
+// Series we track for FED-HAWK and other DOMEX agents
 const FRED_SERIES = {
   CPIAUCSL: { name: 'CPI (All Urban Consumers)', unit: 'index' },
   PCEPI: { name: 'PCE Price Index', unit: 'index' },
@@ -12,6 +12,10 @@ const FRED_SERIES = {
   FEDFUNDS: { name: 'Fed Funds Rate', unit: '%' },
   DGS10: { name: '10-Year Treasury Yield', unit: '%' },
   GDP: { name: 'GDP (Annualized)', unit: 'billions $' },
+  // Expanded series for richer feature extraction
+  T5YIE: { name: '5-Year Breakeven Inflation', unit: '%' },
+  ICSA: { name: 'Initial Jobless Claims', unit: 'thousands' },
+  UMCSENT: { name: 'Consumer Sentiment (UMich)', unit: 'index' },
 } as const;
 
 type FredSeriesId = keyof typeof FRED_SERIES;

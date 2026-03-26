@@ -2468,24 +2468,42 @@ Black-Scholes-like pricing for crypto bracket/floor contracts:
 - `priceBracketContract(S, lower, upper, vol, T)`: P(lower <= S_T <= upper)
 - Default 57% annualized vol if insufficient price data
 
-### V2.6 Expanded DOMEX (8 Agents)
+### V2.6 DOMEX v2: Feature Extraction Architecture (7 Agents)
 
 **Files:** `apps/api/src/modules/domex-agents/` + `apps/api/src/modules/domex.ts`
 
-Expanded from 3 to 8 domain expert agents:
+**Critical change: Agents are FEATURE EXTRACTORS, not probability oracles.**
 
-| Agent | Target Categories |
-|-------|------------------|
-| FedHawkAgent | FINANCE, POLITICS |
-| GeoIntelAgent | POLITICS, CRYPTO |
-| CryptoAlphaAgent | CRYPTO |
-| SportsEdgeAgent | SPORTS |
-| WeatherHawkAgent | SCIENCE, ENTERTAINMENT |
-| LegalEagleAgent | POLITICS, FINANCE, CRYPTO |
-| CorporateIntelAgent | FINANCE, ENTERTAINMENT |
-| EntertainmentScoutAgent | ENTERTAINMENT, SPORTS |
+Previous architecture asked Claude to estimate probabilities directly (anchoring to market price → biased outputs). New architecture:
 
-All agents run in parallel on category-relevant markets. Trimmed-mean aggregation (drop highest/lowest if 3+). Flag agent disagreement >8% spread. Penalize confidence on disagreement.
+1. **Market price NEVER shown to agents** — prevents anchoring bias
+2. **Agents extract structured feature vectors** (not probabilities)
+3. **FeatureModel (logistic regression)** converts combined features → calibrated probability
+4. **Demoted to TIER_1/Haiku** for feature extraction (~75% cost reduction)
+
+| Agent | Categories | Data Sources | Features Extracted |
+|-------|-----------|-------------|-------------------|
+| FED-HAWK | FINANCE | FRED (CPI, PCE, unemployment, yields, breakeven inflation, claims, sentiment), CME FedWatch | questionType, cpiTrend, laborMarketTightness, fedCommunicationTone, recentDataSurprise, cmeCutProbability, geopoliticalRisk, financialStress |
+| GEO-INTEL | POLITICS | Polling data, Congress.gov (with `estimatePassageProbability()` base rates) | questionType, pollingSpread, pollingTrend, incumbentRunning, billStage, cosponsorCount, bipartisanSupport, conflictIntensity, escalationTrend |
+| CRYPTO-ALPHA | CRYPTO | Binance WebSocket (live prices, 24h change, volume, funding rates) | priceVs30dAvg, fundingRate, exchangeNetFlow, protocolTVLTrend, majorUpgrade, regulatoryAction |
+| SPORTS-EDGE | SPORTS | None (LLM knowledge) | homeAway, restDays, injuryImpact, recentFormLast10, headToHeadRecord, playoffVsRegular, sport |
+| WEATHER-HAWK | SCIENCE | NWS API (api.weather.gov, free) | forecastLeadDays, forecastConfidence, nwsForecastAvailable, forecastedCondition, forecastedTempF, climatologicalBaseRate, modelAgreement |
+| LEGAL-EAGLE | POLITICS | CourtListener API (free, courtlistener.com) | caseType, courtLevel, oralArgumentHeld, questionPresented, circuitSplitExists, historicalReverseRate, proceduralStage |
+| CORPORATE-INTEL | FINANCE | None (LLM knowledge + base rates) | eventType, earningsSurpriseHistory, revenueGrowthTrend, analystConsensus, sectorMomentum, insiderActivity, regulatoryRisk |
+
+**ENTERTAINMENT-SCOUT removed** — no data sources, zero edge potential, CULTURE markets too unpredictable.
+
+**Aggregation flow:** Agent feature vectors → mapped to typed FeatureVector → fed into `predict()` from `@apex/cortex/feature-model.ts` → calibrated probability with confidence and feature importance ranking.
+
+**DomexAgentResult interface (v2):**
+```typescript
+interface DomexAgentResult {
+  features: Record<string, string | number | boolean | null>;
+  reasoning: string;
+  dataSourcesUsed: string[];
+  dataFreshness: 'live' | 'cached' | 'stale' | 'none';
+}
+```
 
 ### V2.7 Crypto Strategy Engine (CRYPTEX)
 

@@ -4,4 +4,5 @@ export const sportsEdgeAgent = createDomexAgent({
   name: 'SPORTS-EDGE',
   promptFile: 'domex-sports-edge.md',
   categories: ['SPORTS'],
+  task: 'DOMEX_FEATURE_EXTRACT',
 });
