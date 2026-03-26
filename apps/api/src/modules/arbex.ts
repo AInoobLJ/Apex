@@ -52,7 +52,7 @@ export async function runArbScan(): Promise<ArbOpportunity[]> {
   // 2. Cross-platform arb scan
   const kalshiMarkets = markets.filter(m => m.platform === 'KALSHI');
   const polymarketMarkets = markets.filter(m => m.platform === 'POLYMARKET');
-  const crossArbs = scanCrossPlatformArbs(kalshiMarkets, polymarketMarkets);
+  const crossArbs = await scanCrossPlatformArbs(kalshiMarkets, polymarketMarkets);
   opportunities.push(...crossArbs);
 
   logger.info({
@@ -119,14 +119,14 @@ function scanIntraPlatformArbs(
 
 // ── Cross-Platform Arb Detection ──
 
-function scanCrossPlatformArbs(
+async function scanCrossPlatformArbs(
   kalshiMarkets: (Market & { contracts: Contract[] })[],
   polymarketMarkets: (Market & { contracts: Contract[] })[]
-): ArbOpportunity[] {
+): Promise<ArbOpportunity[]> {
   const arbs: ArbOpportunity[] = [];
 
   // Find matching markets
-  const matches = findMatchingMarkets(kalshiMarkets, polymarketMarkets, MIN_CROSS_PLATFORM_SIMILARITY);
+  const matches = await findMatchingMarkets(kalshiMarkets, polymarketMarkets, MIN_CROSS_PLATFORM_SIMILARITY);
 
   for (const match of matches) {
     const kalshi = kalshiMarkets.find(m => m.id === match.kalshiMarketId);

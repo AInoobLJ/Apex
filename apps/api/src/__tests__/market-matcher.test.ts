@@ -25,7 +25,7 @@ function mockMarket(overrides: Partial<Market>): Market {
 }
 
 describe('Market Matcher', () => {
-  it('matches markets with similar titles across platforms', () => {
+  it('matches markets with similar titles across platforms', async () => {
     const kalshi = [
       mockMarket({ id: 'k1', platform: 'KALSHI', title: 'Fed rate cut June 2025' }),
     ];
@@ -34,14 +34,14 @@ describe('Market Matcher', () => {
       mockMarket({ id: 'p2', platform: 'POLYMARKET', title: 'Bitcoin price above $100K by July' }),
     ];
 
-    const matches = findMatchingMarkets(kalshi, poly, 0.3);
+    const matches = await findMatchingMarkets(kalshi, poly, 0.3);
     expect(matches.length).toBe(1);
     expect(matches[0].kalshiMarketId).toBe('k1');
     expect(matches[0].polymarketMarketId).toBe('p1');
     expect(matches[0].similarity).toBeGreaterThan(0.3);
   });
 
-  it('returns no matches for unrelated markets', () => {
+  it('returns no matches for unrelated markets', async () => {
     const kalshi = [
       mockMarket({ id: 'k1', platform: 'KALSHI', title: 'Will Bitcoin exceed $200K?' }),
     ];
@@ -49,11 +49,11 @@ describe('Market Matcher', () => {
       mockMarket({ id: 'p1', platform: 'POLYMARKET', title: 'Will the Lakers win the NBA championship?' }),
     ];
 
-    const matches = findMatchingMarkets(kalshi, poly, 0.5);
+    const matches = await findMatchingMarkets(kalshi, poly, 0.5);
     expect(matches.length).toBe(0);
   });
 
-  it('respects threshold parameter', () => {
+  it('respects threshold parameter', async () => {
     const kalshi = [
       mockMarket({ id: 'k1', platform: 'KALSHI', title: 'Fed rate decision June' }),
     ];
@@ -61,8 +61,8 @@ describe('Market Matcher', () => {
       mockMarket({ id: 'p1', platform: 'POLYMARKET', title: 'FOMC rate decision June meeting' }),
     ];
 
-    const matchesLow = findMatchingMarkets(kalshi, poly, 0.2);
-    const matchesHigh = findMatchingMarkets(kalshi, poly, 0.9);
+    const matchesLow = await findMatchingMarkets(kalshi, poly, 0.2);
+    const matchesHigh = await findMatchingMarkets(kalshi, poly, 0.9);
     expect(matchesLow.length).toBeGreaterThanOrEqual(matchesHigh.length);
   });
 });

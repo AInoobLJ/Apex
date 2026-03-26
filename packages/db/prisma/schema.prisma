@@ -159,6 +159,7 @@ model Signal {
 
   @@index([marketId, moduleId])
   @@index([moduleId, createdAt])
+  @@index([createdAt])
   @@index([expiresAt])
 }
 

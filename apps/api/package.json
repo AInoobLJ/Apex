@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
+    "@apex/cortex": "*",
     "@apex/db": "*",
     "@apex/shared": "*",
     "@apex/tradex": "*",

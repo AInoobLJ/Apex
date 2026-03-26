@@ -9,8 +9,8 @@
     },
     {
       "name": "dashboard",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--workspace=@apex/dashboard"],
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": ["-c", "cd /Users/lukejurat/Desktop/Apex && export PATH=/opt/homebrew/bin:$PATH && npm run dev --workspace=@apex/dashboard"],
       "port": 5173
     }
   ]

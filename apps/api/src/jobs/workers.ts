@@ -72,8 +72,8 @@ export function startWorkers() {
     {
       connection: bullmqConnection,
       concurrency: 1,
-      lockDuration: 600000,
-      stalledInterval: 300000,
+      lockDuration: 1800000,   // 30 min — LLM pipeline can take 20+ min
+      stalledInterval: 900000, // 15 min stall check
     }
   );
 

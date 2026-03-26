@@ -18,7 +18,7 @@
 ### Database
 
 - [x] [P1] Write Phase 1 Prisma schema: Market, Contract, PriceSnapshot, OrderBookSnapshot, Signal, Edge, SystemConfig, ApiUsageLog with all enums (`prisma generate` succeeds)
-- [ ] [P1] Run initial migration (`prisma migrate dev` creates all tables, `prisma db push` connects to Docker Postgres)
+- [x] [P1] Run initial migration (`prisma db push` syncs all 27 models to Postgres, including v2 models)
 - [x] [P1] Create `packages/db/src/index.ts` that re-exports PrismaClient and generated types (importable from `@apex/db`)
 
 ### API Server Setup
@@ -524,6 +524,18 @@
 - [ ] [P6] Add Metaculus adapter implementing `PredictionMarketAdapter` interface
 - [ ] [P6] Implement position auto-sync: read open positions from Kalshi/Polymarket APIs
 - [ ] [P6] Build mobile-friendly Alerts page (responsive, alert-only view usable on phone)
+
+### Critical Fixes (Code Review)
+
+- [x] [FIX] Wire CalibrationEngine into live CORTEX synthesis — `applyCalibration()` called on every signal before fusion in `engine/cortex.ts`
+- [x] [FIX] Implement Kelly sizing formula: `f* = (p*b - q) / b`, quarter-Kelly (`* 0.25`), stored in Edge record and used by PaperTrader
+- [x] [FIX] Worker memory fix: `--max-old-space-size=2048` in `start-worker.sh`, `MAX_MARKETS` reduced from 25 to 15
+- [x] [FIX] Market matcher upgrade: Jaccard pre-filter → Claude Haiku semantic matching, permanent in-memory cache
+- [x] [FIX] Consolidate signal fusion: `engine/cortex.ts` now delegates to canonical `fuseSignals()` from `@apex/cortex` — no duplicate fusion logic
+- [x] [FIX] Add standalone `@@index([createdAt])` on Signal model in Prisma schema
+- [x] [FIX] Analysis worker lock duration increased to 30 min with per-market lock extension for long LLM pipeline runs
+- [x] [FIX] Signal pipeline pre-filters extreme-price markets (< 5¢ or > 95¢) before processing
+- [x] [FIX] Missing database tables synced via `prisma db push` (15 of 27 models were missing)
 
 ### Discussed But Not Built
 

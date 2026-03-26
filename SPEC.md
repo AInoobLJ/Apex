@@ -435,53 +435,24 @@ interface FlowexMetadata {
 - FLOWEX probability = VWAP (i.e., mean reversion target).
 - Confidence = `min(0.6, bookDepth / 50000)` — higher book depth = more confident in mean reversion.
 
-#### CORTEX v1 (`apps/api/src/engine/cortex.ts`)
+#### CORTEX v3 (`apps/api/src/engine/cortex.ts`)
 
-Phase 1 is a simple weighted average with only COGEX and FLOWEX:
+The live synthesis engine. Pipeline: **Calibration → Signal Fusion → Edge Calculation → Kelly Sizing**.
+
+Delegates probability fusion to the canonical `fuseSignals()` engine in `@apex/cortex`, which handles time decay, module weighting, and agreement scoring. The live engine adds:
+
+1. **Calibration stage**: calls `applyCalibration()` from `@apex/cortex` on each raw signal probability before fusion. Applies per-module, per-category, per-time-bucket bias corrections learned from resolved markets.
+2. **Signal filtering**: ARBEX and SPEEDEX excluded from probability synthesis (they produce arb signals, not probability estimates).
+3. **Conflict detection**: Low agreement score (< 0.5) from fusion engine triggers conflict flag.
+4. **Kelly sizing**: Quarter-Kelly formula: `f* = max(0, ((p*b - q) / b) * 0.25)` where `p = cortexProbability`, `q = 1-p`, `b = 1/betPrice - 1`.
 
 ```typescript
 interface CortexInput {
   marketId: string;
   marketPrice: number;
-  signals: SignalOutput[];  // from available modules
-}
-
-function synthesize(input: CortexInput): EdgeOutput {
-  const { signals, marketPrice, marketId } = input;
-
-  // Equal weights in v1 (no historical data yet)
-  const totalWeight = signals.length;
-  const weightedProb = signals.reduce((sum, s) => sum + s.probability, 0) / totalWeight;
-  const avgConfidence = signals.reduce((sum, s) => sum + s.confidence, 0) / totalWeight;
-
-  // Coverage factor: 2/8 modules = 0.25
-  const coverageFactor = signals.length / 8;
-  const confidence = Math.min(avgConfidence, coverageFactor);
-
-  const edgeMagnitude = Math.abs(weightedProb - marketPrice);
-  const edgeDirection = weightedProb > marketPrice ? 'BUY_YES' : 'BUY_NO';
-  const expectedValue = edgeMagnitude * confidence;
-
-  return {
-    marketId,
-    cortexProbability: weightedProb,
-    marketPrice,
-    edgeMagnitude,
-    edgeDirection,
-    confidence,
-    expectedValue,
-    signals: signals.map(s => ({
-      moduleId: s.moduleId,
-      probability: s.probability,
-      confidence: s.confidence,
-      weight: 1 / totalWeight,
-      reasoning: s.reasoning,
-    })),
-    kellySize: 0,  // No portfolio manager in P1
-    isActionable: expectedValue >= 0.03,
-    conflictFlag: false,
-    timestamp: new Date(),
-  };
+  marketCategory: string;
+  signals: SignalOutput[];
+  closesAt?: Date | null;
 }
 ```
 
@@ -1135,25 +1106,22 @@ Add to `apps/api/src/engine/cortex.ts`:
 - Conflict detection: flag when module spread > 0.20
 - Confidence aggregation with disagreement penalty and coverage factor
 
-### 2.7 Kelly Criterion (`apps/api/src/services/portfolio-manager.ts`)
+### 2.7 Kelly Criterion
 
-```typescript
-interface KellyInput {
-  cortexProbability: number;
-  marketPrice: number;
-  bankroll: number;
-  kellyMultiplier: number;  // default 0.25
-  existingPositions: Position[];
-  concentrationLimits: ConcentrationLimits;
-}
+Kelly sizing is computed directly in `engine/cortex.ts` during synthesis and stored in the Edge record:
 
-interface KellyOutput {
-  recommendedSize: number;      // dollar amount
-  kellyFraction: number;        // raw kelly fraction
-  adjustedFraction: number;     // after multiplier + limits
-  limitingFactor: string | null; // which limit was binding
-}
 ```
+f* = (p * b - q) / b           # full Kelly fraction
+kellySize = max(0, f* * 0.25)  # quarter-Kelly for safety
+```
+
+Where:
+- `p` = cortexProbability (CORTEX fair value)
+- `q` = 1 - p
+- `b` = payoff odds = `(1 / betPrice) - 1`
+- `betPrice` = marketPrice for BUY_YES, `1 - marketPrice` for BUY_NO
+
+The `kellySize` field is stored on every Edge record and passed to the PaperTrader for position sizing. Portfolio-level concentration limits (`portfolio-manager.ts`, `portfolio-allocator.ts`) apply on top of Kelly sizing.
 
 ### 2.8 WebSocket Events (Phase 2)
 
@@ -1948,18 +1916,18 @@ function calculateNetArb(
 ): { netProfit: number; grossSpread: number; totalFees: number };
 ```
 
-**Market matcher:**
-```typescript
-interface MarketMatch {
-  kalshiMarket: Market;
-  polymarketMarket: Market;
-  similarity: number;       // 0-1 title similarity
-  confirmed: boolean;       // Claude confirmed same event
-}
+**Market matcher** (`apps/api/src/services/market-matcher.ts`):
 
-function findMatchingMarkets(
+Two-stage matching with LLM semantic verification:
+1. **Stage 1 — Jaccard pre-filter**: Fast word-overlap similarity (threshold ≥ 0.25) to identify candidate pairs
+2. **Stage 2 — Claude Haiku matching**: Batches candidate pairs (up to 20 per call) and scores semantic similarity (0-1). Uses `SCREEN_MARKET` LLM task tier.
+3. **Permanent cache**: Results cached in-memory for the worker lifetime (market titles never change). Eliminates redundant LLM calls across arb scan cycles.
+
+```typescript
+async function findMatchingMarkets(
   kalshiMarkets: Market[],
-  polymarketMarkets: Market[]
+  polymarketMarkets: Market[],
+  threshold?: number  // default 0.5
 ): Promise<MarketMatch[]>;
 ```
 
@@ -2425,11 +2393,12 @@ Each transition is logged in `OpportunityTransition` with timestamp, metadata, a
 
 The monolithic CORTEX engine was split into 4 independent, composable engines:
 
-**Signal Fusion Engine** (`signal-fusion.ts`):
+**Signal Fusion Engine** (`signal-fusion.ts`) — **CANONICAL probability fusion implementation**:
 - Weighted combination of raw signals from 11 modules
 - Per-module time decay constants (SPEEDEX 5min, CRYPTEX 10min, FLOWEX 30min, ARBEX 15min, etc.)
 - Agreement scoring (0-1 disagreement metric)
 - Module weights: SPEEDEX (0.20), ARBEX (0.18), COGEX (0.15), CRYPTEX (0.15), FLOWEX (0.12), LEGEX (0.10), DOMEX (0.10), ALTEX (0.08), SIGINT (0.08), REFLEX (0.05), NEXUS (0.04)
+- **Note**: `engine/cortex.ts` delegates to `fuseSignals()` for all probability fusion. There is no duplicate fusion logic — `cortex.ts` handles calibration, edge calculation, and Kelly sizing around the canonical fusion call.
 
 **Calibration Engine** (`calibration-memory.ts`):
 - Per-module, per-category historical bias correction
@@ -2437,6 +2406,7 @@ The monolithic CORTEX engine was split into 4 independent, composable engines:
 - Time-bucketed calibration (hours/days/weeks/months)
 - Recalibrates weekly from resolved markets
 - Requires 10+ samples before applying correction
+- **Wired into live pipeline**: `engine/cortex.ts` calls `applyCalibration()` on every signal before fusion. Corrections are applied pre-synthesis so the fusion engine operates on bias-corrected probabilities.
 
 **Opportunity Scoring Engine** (`opportunity-scoring.ts`):
 - Edge magnitude: |fair_value - market_price|
@@ -2552,11 +2522,17 @@ Replaces raw API key in WebSocket URL with a short-lived ticket:
 3. Legacy fallback: `?apiKey=xxx` still works but is deprecated
 4. Auto-cleanup of expired tickets every 60 seconds
 
-### V2.10 Auto-Restart Wrapper
+### V2.10 Auto-Restart Wrapper & Worker Memory Configuration
 
 **File:** `apps/api/scripts/start-worker.sh`
 
 Bash script with infinite loop restart logic and 5-second delay on crash. Usage: `./apps/api/scripts/start-worker.sh`
+
+**Memory configuration:**
+- `NODE_OPTIONS="--max-old-space-size=2048"` — 2 GB heap limit for the worker process
+- `MAX_MARKETS = 15` in `signal-pipeline.job.ts` — reduced from 25 to stay within memory budget with concurrent LLM module execution
+- Analysis worker lock duration: 30 min (`lockDuration: 1800000`) with per-market lock extension to handle long LLM pipeline runs
+- Pipeline pre-filters extreme-price markets (< 5¢ or > 95¢) to avoid wasting LLM calls on unanalyzable markets
 
 ### V2.11 Rate Limiting & Security
 

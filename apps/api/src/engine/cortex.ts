@@ -1,7 +1,8 @@
-import { SignalOutput, EdgeOutput, SignalContribution, clampProbability, ModuleId, MODULE_HALF_LIVES, DEFAULT_WEIGHTS } from '@apex/shared';
+import { SignalOutput, EdgeOutput, SignalContribution, clampProbability, ModuleId } from '@apex/shared';
 import { EDGE_ACTIONABILITY_THRESHOLD } from '@apex/shared';
 import { syncPrisma as prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
+import { applyCalibration, fuseSignals, RawSignal } from '@apex/cortex';
 
 export interface CortexInput {
   marketId: string;
@@ -12,8 +13,11 @@ export interface CortexInput {
 }
 
 /**
- * CORTEX v2: weighted synthesis with time decay, conflict detection, and coverage-adjusted confidence.
- * Falls back to v1 (equal weights) if no DB weights available.
+ * CORTEX v3: calibration → signal fusion → edge calculation → Kelly sizing.
+ *
+ * Delegates probability fusion to the canonical SignalFusionEngine in @apex/cortex,
+ * which handles time decay, module weighting, and agreement scoring.
+ * Adds calibration corrections (pre-fusion) and Kelly sizing (post-fusion).
  */
 export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution: number; capitalEfficiency: number } {
   const { signals, marketPrice, marketId, marketCategory, closesAt } = input;
@@ -27,70 +31,67 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
     return { ...makeNullEdge(marketId, marketPrice), daysToResolution, capitalEfficiency: 0 };
   }
 
-  const now = Date.now();
-
-  // Apply time decay and compute weights
-  const weightedSignals = signals.map(s => {
-    const ageMinutes = (now - s.timestamp.getTime()) / 60000;
-    const halfLife = MODULE_HALF_LIVES[s.moduleId] ?? 60;
-    const decayFactor = Math.exp(-Math.LN2 * ageMinutes / halfLife);
-
-    // Get module weight for this category (default weights)
-    const categoryWeights = DEFAULT_WEIGHTS[s.moduleId];
-    const baseWeight = categoryWeights?.[marketCategory] ?? categoryWeights?.OTHER ?? 0.10;
-
-    // Skip ARBEX/SPEEDEX in probability synthesis (they produce arb signals, not probability estimates)
-    if (s.moduleId === 'ARBEX' || s.moduleId === 'SPEEDEX') {
-      return { signal: s, weight: 0, decayedConfidence: s.confidence * decayFactor };
+  // ── Stage 1: Calibration ──
+  // Apply per-module, per-category, per-time-bucket bias corrections
+  const calibratedSignals = signals.map(s => {
+    const { calibrated, correction, sampleSize } = applyCalibration(
+      s.probability, s.moduleId, marketCategory, daysToResolution
+    );
+    if (correction !== 0) {
+      logger.debug({ moduleId: s.moduleId, raw: s.probability, calibrated, correction, sampleSize },
+        'Calibration correction applied');
     }
-
-    const weight = baseWeight * decayFactor * s.confidence;
-    return { signal: s, weight, decayedConfidence: s.confidence * decayFactor };
+    return { ...s, probability: calibrated };
   });
 
-  // Filter to signals with non-zero weight for synthesis
-  const activeSignals = weightedSignals.filter(ws => ws.weight > 0);
+  // ── Stage 2: Signal Fusion (canonical engine) ──
+  // Filter out ARBEX/SPEEDEX from probability synthesis (they produce arb signals, not probability)
+  const probabilitySignals = calibratedSignals.filter(
+    s => s.moduleId !== 'ARBEX' && s.moduleId !== 'SPEEDEX'
+  );
 
-  if (activeSignals.length === 0) {
+  if (probabilitySignals.length === 0) {
     return { ...makeNullEdge(marketId, marketPrice), daysToResolution, capitalEfficiency: 0 };
   }
 
-  // Weighted average probability
-  const totalWeight = activeSignals.reduce((sum, ws) => sum + ws.weight, 0);
-  const weightedProb = activeSignals.reduce((sum, ws) => sum + ws.signal.probability * ws.weight, 0) / totalWeight;
+  // Convert to RawSignal format for the canonical fusion engine
+  const rawSignals: RawSignal[] = probabilitySignals.map(s => ({
+    moduleId: s.moduleId,
+    probability: s.probability,
+    confidence: s.confidence,
+    reasoning: s.reasoning ?? '',
+    createdAt: s.timestamp,
+    metadata: s.metadata as Record<string, unknown> | undefined,
+  }));
 
-  // Conflict detection: flag when module spread > 0.20
-  const probs = activeSignals.map(ws => ws.signal.probability);
-  const spread = Math.max(...probs) - Math.min(...probs);
-  const conflictFlag = spread > 0.20;
+  const fused = fuseSignals(rawSignals);
 
-  // Confidence: weighted average of decayed confidences, penalized by disagreement
-  const avgConfidence = activeSignals.reduce((sum, ws) => sum + ws.decayedConfidence * ws.weight, 0) / totalWeight;
-  const disagreementPenalty = conflictFlag ? Math.max(0.3, 1 - spread) : 1;
-
-  // Coverage factor: gentle scaling, NOT harsh N/10.
-  // Missing modules = "no opinion" (neutral), not "disagreement" (penalty).
-  // 1 module = 0.5, 2 = 0.65, 3+ = 0.8+, 6+ = 1.0
-  const coverageFactor = Math.min(1, 0.4 + signals.length * 0.1);
-  let confidence = clampProbability(avgConfidence * disagreementPenalty * coverageFactor);
-
-  // Floor: if 3+ modules contribute, minimum 20% confidence
-  if (signals.length >= 3 && confidence < 0.20) {
-    confidence = 0.20;
-  }
-
-  const cortexProbability = clampProbability(weightedProb);
+  // ── Stage 3: Edge Calculation ──
+  const cortexProbability = clampProbability(fused.probability);
+  const confidence = clampProbability(fused.confidence);
+  const conflictFlag = fused.agreementScore < 0.5; // low agreement = conflict
   const edgeMagnitude = Math.abs(cortexProbability - marketPrice);
   const edgeDirection = cortexProbability > marketPrice ? 'BUY_YES' as const : 'BUY_NO' as const;
   const expectedValue = edgeMagnitude * confidence;
   const capitalEfficiency = edgeMagnitude / Math.sqrt(daysToResolution);
 
-  const signalContributions: SignalContribution[] = weightedSignals.map(ws => ({
-    moduleId: ws.signal.moduleId,
-    probability: ws.signal.probability,
-    confidence: ws.decayedConfidence,
-    weight: totalWeight > 0 ? ws.weight / totalWeight : 0,
-    reasoning: ws.signal.reasoning,
+  // ── Stage 4: Kelly Sizing ──
+  // f* = (p*b - q) / b, then quarter-Kelly for safety
+  // b = payoff odds = (1/betPrice - 1)
+  const p = cortexProbability;
+  const q = 1 - p;
+  const betPrice = edgeDirection === 'BUY_YES' ? marketPrice : (1 - marketPrice);
+  const b = betPrice > 0.001 && betPrice < 0.999 ? (1 / betPrice - 1) : 0;
+  const rawKelly = b > 0 ? (p * b - q) / b : 0;
+  const kellySize = Math.max(0, rawKelly * 0.25); // quarter-Kelly
+
+  // Build signal contributions from fusion results
+  const signalContributions: SignalContribution[] = fused.contributingModules.map(cm => ({
+    moduleId: cm.moduleId as ModuleId,
+    probability: cm.probability,
+    confidence: cm.decayedConfidence,
+    weight: cm.weight,
+    reasoning: probabilitySignals.find(s => s.moduleId === cm.moduleId)?.reasoning ?? '',
   }));
 
   return {
@@ -102,7 +103,7 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
     confidence,
     expectedValue,
     signals: signalContributions,
-    kellySize: 0,
+    kellySize,
     isActionable: expectedValue >= EDGE_ACTIONABILITY_THRESHOLD,
     conflictFlag,
     timestamp: new Date(),

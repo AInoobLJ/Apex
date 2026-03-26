@@ -9,7 +9,7 @@ echo "🚀 APEX worker auto-restart wrapper started"
 
 while true; do
   echo "$(date '+%Y-%m-%d %H:%M:%S') — Starting worker..."
-  npx tsx src/worker.ts
+  NODE_OPTIONS="--max-old-space-size=2048" npx tsx src/worker.ts
   EXIT_CODE=$?
   echo "$(date '+%Y-%m-%d %H:%M:%S') — Worker exited with code $EXIT_CODE"
 

@@ -18,7 +18,8 @@ import type { MarketWithData } from '../modules/base';
 const flowexModule = new FlowexModule();
 
 // Max markets per pipeline run — keep small to reduce memory pressure and crash risk
-const MAX_MARKETS = 25;
+// Reduced from 25 to 15 to stay within --max-old-space-size=2048 with LLM modules
+const MAX_MARKETS = 15;
 
 // Track pipeline run count for priority scheduling
 let pipelineRunCount = 0;
@@ -45,18 +46,24 @@ export async function handleSignalPipeline(job: Job): Promise<void> {
       return;
     }
 
-    // 2. Get top active markets by volume (not all 40K)
-    const markets = await prisma.market.findMany({
+    // 2. Get top active markets by volume — fetch extra to compensate for extreme-price filtering
+    const rawMarkets = await prisma.market.findMany({
       where: { status: 'ACTIVE' },
       orderBy: { volume: 'desc' },
-      take: MAX_MARKETS,
+      take: MAX_MARKETS * 10,
       include: {
         contracts: true,
         priceSnapshots: { orderBy: { timestamp: 'desc' }, take: 200 },
       },
     });
 
-    logger.info({ marketCount: markets.length }, 'Running signal pipeline');
+    // Filter to markets with YES contracts in analyzable price range (0.05–0.95)
+    const markets = rawMarkets.filter(m => {
+      const yesContract = m.contracts.find(c => c.outcome === 'YES');
+      return yesContract?.lastPrice && yesContract.lastPrice >= 0.05 && yesContract.lastPrice <= 0.95;
+    }).slice(0, MAX_MARKETS);
+
+    logger.info({ marketCount: markets.length, rawFetched: rawMarkets.length }, 'Running signal pipeline');
 
     // 3. Run modules per market
     let totalSignals = 0;
@@ -92,9 +99,9 @@ export async function handleSignalPipeline(job: Job): Promise<void> {
       );
       if (skipLLMThisCycle && !isExtreme) recordSchedulingSaving();
 
-      // Extend lock to prevent stall detection on long pipeline runs
-      if (marketIndex % 10 === 0 && job.extendLock) {
-        try { await job.extendLock(job.token!, 300000); } catch { /* ignore */ }
+      // Extend lock before every market to prevent stall detection on long LLM pipeline runs
+      if (job.extendLock) {
+        try { await job.extendLock(job.token!, 1800000); } catch { /* ignore */ }
       }
       marketIndex++;
 
