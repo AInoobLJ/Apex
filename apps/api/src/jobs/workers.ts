@@ -9,6 +9,8 @@ import { handleNewsIngest } from './news-ingest.job';
 import { handleDailyDigest } from './daily-digest.job';
 import { handleDataRetention } from './data-retention.job';
 import { handleWeightUpdate } from './weight-update.job';
+import { handleSigintJob } from './sigint.job';
+import { handleNexusJob } from './nexus.job';
 
 /**
  * Wrap any job handler in try/catch so a single job failure
@@ -57,6 +59,10 @@ export function startWorkers() {
       switch (job.name) {
         case 'signal-pipeline':
           return safeHandler('signal-pipeline', handleSignalPipeline)(job);
+        case 'sigint-profiling':
+          return safeHandler('sigint-profiling', handleSigintJob)(job);
+        case 'nexus-graph':
+          return safeHandler('nexus-graph', handleNexusJob)(job);
         default:
           logger.warn({ jobName: job.name }, 'Unknown analysis job');
       }

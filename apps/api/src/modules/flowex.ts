@@ -72,16 +72,19 @@ export class FlowexModule extends SignalModule {
       probability = clampProbability(vwap24h);
       confidence = Math.min(0.6, (current.totalBidDepth + current.totalAskDepth) / 50000);
       reasoning = `Liquidity-driven move detected. Price ${(priceVsVwap * 100).toFixed(1)}% from 24h VWAP (${(vwap24h * 100).toFixed(1)}%). Mean reversion signal toward VWAP.`;
-    } else if (thinBook) {
-      // Thin book: use market price but with very low confidence
+    } else if (thinBook && (current.totalBidDepth + current.totalAskDepth) > 0) {
+      // Thin book with SOME data: flag as warning signal
       probability = marketPrice;
       confidence = 0.1;
-      reasoning = `Thin order book ($${(current.totalBidDepth + current.totalAskDepth).toFixed(0)} total depth). Price unreliable.`;
+      reasoning = `Thin order book ($${(current.totalBidDepth + current.totalAskDepth).toFixed(0)} total depth). Price unreliable — potential for manipulation.`;
+    } else if (Math.abs(ofi) > 0.3) {
+      // Strong order flow imbalance without a price move yet — leading signal
+      probability = clampProbability(marketPrice + ofi * 0.05);
+      confidence = Math.min(0.4, Math.abs(ofi) * 0.5);
+      reasoning = `Strong order flow imbalance (OFI: ${ofi.toFixed(2)}). ${ofi > 0 ? 'Bid' : 'Ask'} pressure building — price may move ${ofi > 0 ? 'up' : 'down'}.`;
     } else {
-      // No strong signal — output market price with moderate info
-      probability = marketPrice;
-      confidence = 0.2;
-      reasoning = `Move classified as ${moveClass}. OFI: ${ofi.toFixed(2)}. No strong microstructure signal.`;
+      // No meaningful signal — return null instead of spamming
+      return null;
     }
 
     return this.makeSignal(

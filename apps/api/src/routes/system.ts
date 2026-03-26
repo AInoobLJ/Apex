@@ -76,7 +76,13 @@ export default async function systemRoutes(fastify: FastifyInstance) {
         totalTokensOut,
         byEndpoint,
       },
-      budget: parseFloat(process.env.LLM_DAILY_BUDGET || '10'),
+      budget: parseFloat(process.env.LLM_DAILY_BUDGET || '25'),
+      optimization: (() => {
+        try {
+          const { getCostOptimizationStats } = require('../services/claude-client');
+          return getCostOptimizationStats();
+        } catch { return null; }
+      })(),
     };
   });
 
@@ -141,21 +147,49 @@ async function checkRedis(): Promise<{ status: 'up' | 'down'; latencyMs: number 
   }
 }
 
-async function checkExternalApi(service: string): Promise<{ status: 'up' | 'down' | 'unknown'; lastSuccessAt: string | null }> {
+async function checkExternalApi(service: string): Promise<{ status: 'up' | 'down' | 'syncing' | 'unknown'; lastSuccessAt: string | null }> {
   try {
+    // Check if ingestion jobs are currently active
+    const stats = await getQueueStats();
+    const ingestionStats = stats.find(s => s.name === 'ingestion');
+    const isActivelyIngesting = ingestionStats && ingestionStats.active > 0;
+
     const lastSuccess = await prisma.apiUsageLog.findFirst({
       where: { service, statusCode: { gte: 200, lt: 300 } },
       orderBy: { createdAt: 'desc' },
       select: { createdAt: true },
     });
 
-    if (!lastSuccess) return { status: 'unknown', lastSuccessAt: null };
+    // Check for recent failures
+    const lastFailure = await prisma.apiUsageLog.findFirst({
+      where: { service, statusCode: { gte: 400 } },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true, statusCode: true },
+    });
+
+    if (!lastSuccess) {
+      // No successes ever — syncing if jobs are queued, unknown otherwise
+      return { status: isActivelyIngesting ? 'syncing' : 'unknown', lastSuccessAt: null };
+    }
 
     const ageMinutes = (Date.now() - lastSuccess.createdAt.getTime()) / 60000;
-    return {
-      status: ageMinutes < 15 ? 'up' : 'down',
-      lastSuccessAt: lastSuccess.createdAt.toISOString(),
-    };
+
+    if (ageMinutes < 15) {
+      return { status: 'up', lastSuccessAt: lastSuccess.createdAt.toISOString() };
+    }
+
+    // Stale but jobs are running — syncing, not down
+    if (isActivelyIngesting || (ingestionStats && ingestionStats.waiting > 0)) {
+      return { status: 'syncing', lastSuccessAt: lastSuccess.createdAt.toISOString() };
+    }
+
+    // Recent failure + stale success = down
+    if (lastFailure && lastFailure.createdAt > lastSuccess.createdAt) {
+      return { status: 'down', lastSuccessAt: lastSuccess.createdAt.toISOString() };
+    }
+
+    // Stale but no recent failure — likely just waiting for next cycle
+    return { status: ageMinutes < 30 ? 'syncing' : 'down', lastSuccessAt: lastSuccess.createdAt.toISOString() };
   } catch {
     return { status: 'unknown', lastSuccessAt: null };
   }

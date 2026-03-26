@@ -122,6 +122,42 @@ export function Execution() {
         ))}
       </div>
 
+      {/* Order Strategies */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '24px' }}>
+        <div style={{ backgroundColor: colors.bgSecondary, border: `1px solid ${colors.border}`, borderRadius: '8px', padding: '16px' }}>
+          <div style={{ color: colors.accent, fontFamily: fonts.mono, fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>MAKER-FIRST</div>
+          <div style={{ fontSize: '11px', color: colors.textMuted, lineHeight: 1.5 }}>
+            Limit orders 1-2&#162; inside spread. 30min TTL. Auto-reprice on expiry. Zero maker fees on Polymarket.
+          </div>
+          <div style={{ marginTop: '8px', fontSize: '11px' }}>
+            <span style={{ color: colors.textMuted }}>Mode: </span>
+            <span style={{ color: colors.green }}>SLOW_EXEC</span>
+          </div>
+        </div>
+        <div style={{ backgroundColor: colors.bgSecondary, border: `1px solid ${colors.border}`, borderRadius: '8px', padding: '16px' }}>
+          <div style={{ color: colors.yellow, fontFamily: fonts.mono, fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>MARKET MAKER</div>
+          <div style={{ fontSize: '11px', color: colors.textMuted, lineHeight: 1.5 }}>
+            Bid/ask quotes centered on CORTEX fair value. 3&#162; min spread. FLOWEX imbalance skew. $50 max exposure.
+          </div>
+          <div style={{ marginTop: '8px', fontSize: '11px' }}>
+            <span style={{ color: colors.textMuted }}>Min vol: </span>
+            <span style={{ color: colors.textSecondary }}>$10K/day</span>
+          </div>
+        </div>
+        <div style={{ backgroundColor: colors.bgSecondary, border: `1px solid ${colors.border}`, borderRadius: '8px', padding: '16px' }}>
+          <div style={{ color: colors.green, fontFamily: fonts.mono, fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>ICEBERG</div>
+          <div style={{ fontSize: '11px', color: colors.textMuted, lineHeight: 1.5 }}>
+            Orders {'>'} $25 split into $10 chunks. Auto-replenish on fill. Hides size on thin books.
+          </div>
+        </div>
+        <div style={{ backgroundColor: colors.bgSecondary, border: `1px solid ${colors.border}`, borderRadius: '8px', padding: '16px' }}>
+          <div style={{ color: colors.accent, fontFamily: fonts.mono, fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>SMART ROUTER</div>
+          <div style={{ fontSize: '11px', color: colors.textMuted, lineHeight: 1.5 }}>
+            Compares Kalshi vs Polymarket: price + fees + slippage. Routes to cheapest effective price.
+          </div>
+        </div>
+      </div>
+
       {/* Execution Log */}
       <div style={{ backgroundColor: colors.bgSecondary, border: `1px solid ${colors.border}`, borderRadius: '8px', padding: '20px' }}>
         <h2 style={{ color: colors.text, fontFamily: fonts.mono, fontSize: '14px', marginBottom: '16px' }}>Execution Log</h2>

@@ -5,9 +5,23 @@ import type { DomexAgent, DomexAgentResult } from './domex-agents/base-agent';
 import { fedHawkAgent } from './domex-agents/fed-hawk';
 import { geoIntelAgent } from './domex-agents/geo-intel';
 import { cryptoAlphaAgent } from './domex-agents/crypto-alpha';
+import { sportsEdgeAgent } from './domex-agents/sports-edge';
+import { weatherHawkAgent } from './domex-agents/weather-hawk';
+import { legalEagleAgent } from './domex-agents/legal-eagle';
+import { corporateIntelAgent } from './domex-agents/corporate-intel';
+import { entertainmentScoutAgent } from './domex-agents/entertainment-scout';
 import type { MarketCategory } from '@apex/db';
 
-const ALL_AGENTS: DomexAgent[] = [fedHawkAgent, geoIntelAgent, cryptoAlphaAgent];
+const ALL_AGENTS: DomexAgent[] = [
+  fedHawkAgent,
+  geoIntelAgent,
+  cryptoAlphaAgent,
+  sportsEdgeAgent,
+  weatherHawkAgent,
+  legalEagleAgent,
+  corporateIntelAgent,
+  entertainmentScoutAgent,
+];
 
 export class DomexModule extends SignalModule {
   readonly moduleId = 'DOMEX' as const;
@@ -40,14 +54,31 @@ export class DomexModule extends SignalModule {
     // Aggregate: trimmed mean (drop highest/lowest if 3+, otherwise average)
     const aggregated = this.aggregate(validResults);
 
-    const reasoning = validResults.map((r, i) =>
-      `${relevantAgents[i].name}: ${(r.probability * 100).toFixed(1)}% (conf: ${(r.confidence * 100).toFixed(0)}%) — ${r.reasoning.slice(0, 100)}`
-    ).join('\n');
+    // Flag significant agent disagreement
+    const agentProbs = validResults.map(r => r.probability);
+    const agentSpread = validResults.length >= 2
+      ? Math.max(...agentProbs) - Math.min(...agentProbs)
+      : 0;
+    const hasDisagreement = agentSpread > 0.08; // >8% spread between agents
+
+    const reasoning = [
+      ...(hasDisagreement ? [
+        `⚠️ AGENT DISAGREEMENT (${(agentSpread * 100).toFixed(0)}% spread) — treat with lower confidence`,
+      ] : []),
+      ...validResults.map((r, i) =>
+        `${relevantAgents[i].name}: ${(r.probability * 100).toFixed(1)}% (conf: ${(r.confidence * 100).toFixed(0)}%) — ${r.reasoning.slice(0, 100)}`
+      ),
+    ].join('\n');
+
+    // Further penalize confidence on disagreement
+    const finalConfidence = hasDisagreement
+      ? aggregated.confidence * Math.max(0.3, 1 - agentSpread)
+      : aggregated.confidence;
 
     return this.makeSignal(
       market.id,
       aggregated.probability,
-      aggregated.confidence,
+      finalConfidence,
       reasoning,
       {
         agentCount: validResults.length,

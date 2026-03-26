@@ -68,9 +68,16 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
   const avgConfidence = activeSignals.reduce((sum, ws) => sum + ws.decayedConfidence * ws.weight, 0) / totalWeight;
   const disagreementPenalty = conflictFlag ? Math.max(0.3, 1 - spread) : 1;
 
-  // Coverage factor: N/10 modules
-  const coverageFactor = Math.min(1, signals.length / 10);
-  const confidence = clampProbability(avgConfidence * disagreementPenalty * coverageFactor);
+  // Coverage factor: gentle scaling, NOT harsh N/10.
+  // Missing modules = "no opinion" (neutral), not "disagreement" (penalty).
+  // 1 module = 0.5, 2 = 0.65, 3+ = 0.8+, 6+ = 1.0
+  const coverageFactor = Math.min(1, 0.4 + signals.length * 0.1);
+  let confidence = clampProbability(avgConfidence * disagreementPenalty * coverageFactor);
+
+  // Floor: if 3+ modules contribute, minimum 20% confidence
+  if (signals.length >= 3 && confidence < 0.20) {
+    confidence = 0.20;
+  }
 
   const cortexProbability = clampProbability(weightedProb);
   const edgeMagnitude = Math.abs(cortexProbability - marketPrice);

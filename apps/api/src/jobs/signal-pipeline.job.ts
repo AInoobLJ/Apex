@@ -80,11 +80,17 @@ export async function handleSignalPipeline(job: Job): Promise<void> {
       const isMedium = daysToClose > 7 && daysToClose <= 30;
       const isLong = daysToClose > 30;
 
-      // LLM modules: urgent = every cycle, medium = every 2nd, long = every 4th
-      const skipLLMThisCycle = !isExtreme && (
-        (isMedium && pipelineRunCount % 2 !== 0) ||
-        (isLong && pipelineRunCount % 4 !== 0)
+      // Smart re-analysis scheduling — save LLM credits on non-urgent markets
+      // <7d: every cycle (15 min), 7-30d: every 2nd (30 min), 30d+: every 4th (1 hr)
+      // First run (count=1) always processes ALL markets to build initial signals
+      const { recordSchedulingSaving } = require('../services/claude-client');
+      const skipLLMThisCycle = isExtreme || (
+        pipelineRunCount > 1 && (
+          (isMedium && pipelineRunCount % 2 === 0) ||
+          (isLong && pipelineRunCount % 4 !== 0)
+        )
       );
+      if (skipLLMThisCycle && !isExtreme) recordSchedulingSaving();
 
       // Extend lock to prevent stall detection on long pipeline runs
       if (marketIndex % 10 === 0 && job.extendLock) {
@@ -106,8 +112,16 @@ export async function handleSignalPipeline(job: Job): Promise<void> {
       const speedexResult = await speedexModule.run(marketData).catch(() => null);
       if (speedexResult) signals.push(speedexResult);
 
-      // Run LLM modules (LEGEX, DOMEX, ALTEX, REFLEX) — skip extreme/deprioritized markets, limit total calls
-      if (!isExtreme && !skipLLMThisCycle && totalSignals < 40) {
+      // Run LLM modules (LEGEX, DOMEX, ALTEX, REFLEX) — skip extreme/deprioritized markets
+      if (isExtreme) {
+        logger.debug({ marketId: market.id, price: yesContract.lastPrice }, 'Skipping LLM: extreme price');
+      } else if (skipLLMThisCycle) {
+        logger.debug({ marketId: market.id, daysToClose, runCount: pipelineRunCount }, 'Skipping LLM: scheduling');
+      } else if (totalSignals >= 150) {
+        logger.debug({ totalSignals }, 'Skipping LLM: signal cap reached');
+      }
+      if (!isExtreme && !skipLLMThisCycle && totalSignals < 150) {
+        logger.info({ marketId: market.id, title: market.title.slice(0, 40) }, 'Running LLM modules');
         const [legexResult, domexResult, altexResult, reflexResult] = await Promise.allSettled([
           legexModule.run(marketData),
           domexModule.run(marketData),
@@ -139,8 +153,22 @@ export async function handleSignalPipeline(job: Job): Promise<void> {
         if (altexResult.status === 'rejected') logger.debug({ err: (altexResult.reason as Error)?.message, marketId: market.id }, 'ALTEX failed');
       }
 
-      // Persist signals
+      // Persist signals — with deduplication (skip if same probability + reasoning as last signal)
       for (const signal of signals) {
+        const lastSignal = await prisma.signal.findFirst({
+          where: { moduleId: signal.moduleId, marketId: signal.marketId },
+          orderBy: { createdAt: 'desc' },
+          select: { probability: true, reasoning: true },
+        });
+
+        // Skip duplicate: same probability (within 0.1%) and same reasoning prefix
+        if (lastSignal
+          && Math.abs(lastSignal.probability - signal.probability) < 0.001
+          && lastSignal.reasoning?.slice(0, 80) === signal.reasoning?.slice(0, 80)
+        ) {
+          continue; // Duplicate — skip
+        }
+
         await prisma.signal.create({
           data: {
             moduleId: signal.moduleId,

@@ -3,6 +3,7 @@ import { logger } from '../lib/logger';
 import { kalshiClient } from './kalshi-client';
 import { polymarketClient } from './polymarket-client';
 import type { PredictionMarketAdapter, NormalizedMarket } from '@apex/shared';
+import { reclassifyMarket } from './category-classifier';
 
 // Re-export for backward compatibility
 export { detectCategory } from './category-detector';
@@ -47,6 +48,9 @@ async function syncAdapter(adapter: PredictionMarketAdapter): Promise<number> {
 }
 
 async function upsertNormalizedMarket(m: NormalizedMarket): Promise<void> {
+  // Reclassify OTHER markets using keyword patterns
+  const category = reclassifyMarket(m.title, m.category);
+
   const market = await prisma.market.upsert({
     where: {
       platform_platformMarketId: {
@@ -59,7 +63,7 @@ async function upsertNormalizedMarket(m: NormalizedMarket): Promise<void> {
       platformMarketId: m.platformMarketId,
       title: m.title,
       description: m.description,
-      category: m.category,
+      category,
       status: m.status,
       resolutionText: m.resolutionText,
       resolutionSource: m.resolutionSource,
@@ -71,7 +75,7 @@ async function upsertNormalizedMarket(m: NormalizedMarket): Promise<void> {
     update: {
       title: m.title,
       description: m.description,
-      category: m.category,
+      category,
       status: m.status,
       resolutionText: m.resolutionText,
       resolutionSource: m.resolutionSource,

@@ -70,10 +70,26 @@ export async function registerJobs() {
     { name: 'weight-update' }
   );
 
+  // ─ Intelligence ─
+  // SIGINT wallet profiling: every 1 hour
+  await analysisQueue.upsertJobScheduler(
+    'sigint-profiling',
+    { every: 3600000 }, // 1 hour
+    { name: 'sigint-profiling' }
+  );
+
+  // NEXUS causal graph: every 6 hours
+  await analysisQueue.upsertJobScheduler(
+    'nexus-graph',
+    { every: 21600000 }, // 6 hours
+    { name: 'nexus-graph' }
+  );
+
   logger.info({
     jobs: [
       'market-sync (5m)', 'orderbook-sync (5m)', 'news-ingest (5m)',
       'signal-pipeline (15m)', 'arb-scan (60s)',
+      'sigint-profiling (1h)', 'nexus-graph (6h)',
       'daily-digest (8AM ET)', 'data-retention (24h)', 'weight-update (1h)',
     ],
   }, 'Registered all repeatable jobs');

@@ -20,11 +20,50 @@ const limiter = new Bottleneck({
   maxConcurrent: 5,
 });
 
+// ── Cost optimization tracking ──
+let cacheHits = 0;
+let cacheMisses = 0;
+let callsSavedByCache = 0;
+let callsSavedByScheduling = 0;
+let estimatedSavingsToday = 0;
+
+export function getCostOptimizationStats() {
+  return {
+    cacheHits,
+    cacheMisses,
+    cacheHitRate: cacheHits + cacheMisses > 0
+      ? cacheHits / (cacheHits + cacheMisses)
+      : 0,
+    callsSavedByCache,
+    callsSavedByScheduling,
+    estimatedSavingsToday,
+  };
+}
+
+export function recordSchedulingSaving() {
+  callsSavedByScheduling++;
+  estimatedSavingsToday += 0.005; // avg cost per call
+}
+
+// Reset daily at midnight
+const resetDate = new Date().toDateString();
+function checkDailyReset() {
+  if (new Date().toDateString() !== resetDate) {
+    cacheHits = 0;
+    cacheMisses = 0;
+    callsSavedByCache = 0;
+    callsSavedByScheduling = 0;
+    estimatedSavingsToday = 0;
+  }
+}
+
 export interface ClaudeCallOptions {
   systemPrompt: string;
   userMessage: string;
   task: LLMTask;
   maxTokens?: number;
+  /** Enable prompt caching on the system prompt (default: true) */
+  cacheSystemPrompt?: boolean;
 }
 
 export interface ClaudeResponse<T> {
@@ -34,27 +73,114 @@ export interface ClaudeResponse<T> {
     inputTokens: number;
     outputTokens: number;
     cost: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
   };
 }
 
 /**
+ * In-memory result cache for LLM responses.
+ * Key = hash of (task + systemPrompt + userMessage), Value = { response, expiresAt }
+ */
+const resultCache = new Map<string, { response: any; expiresAt: number }>();
+
+function hashString(s: string): string {
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) {
+    const char = s.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0; // Convert to 32bit integer
+  }
+  return hash.toString(36);
+}
+
+/**
+ * Check result cache before making API call.
+ * Returns cached response if available and not expired.
+ */
+export function getCachedResult<T>(task: string, userMessage: string, systemPrompt: string): ClaudeResponse<T> | null {
+  checkDailyReset();
+  const key = hashString(`${task}:${systemPrompt.slice(0, 100)}:${userMessage}`);
+  const cached = resultCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    cacheHits++;
+    callsSavedByCache++;
+    estimatedSavingsToday += 0.005;
+    return cached.response;
+  }
+  if (cached) resultCache.delete(key); // expired
+  cacheMisses++;
+  return null;
+}
+
+/**
+ * Store result in cache with TTL.
+ */
+export function cacheResult<T>(task: string, userMessage: string, systemPrompt: string, response: ClaudeResponse<T>, ttlMs: number): void {
+  const key = hashString(`${task}:${systemPrompt.slice(0, 100)}:${userMessage}`);
+  resultCache.set(key, { response, expiresAt: Date.now() + ttlMs });
+
+  // Evict old entries if cache grows too large
+  if (resultCache.size > 2000) {
+    const now = Date.now();
+    for (const [k, v] of resultCache) {
+      if (v.expiresAt < now) resultCache.delete(k);
+    }
+  }
+}
+
+// Module-specific cache TTLs — keyed by LLMTask name
+export const CACHE_TTLS: Record<string, number> = {
+  LEGEX_ANALYSIS: 24 * 60 * 60 * 1000,  // 24 hours — resolution criteria don't change
+  REFLEX_ANALYSIS: 24 * 60 * 60 * 1000, // 24 hours — reflexivity is slow-moving
+  DOMEX_AGENT: 6 * 60 * 60 * 1000,      // 6 hours
+  ALTEX_ANALYSIS: 4 * 60 * 60 * 1000,   // 4 hours
+  SCREEN_MARKET: 12 * 60 * 60 * 1000,   // 12 hours — screening result stable
+  SCREEN_NEWS: 30 * 60 * 1000,          // 30 minutes
+};
+
+/**
  * Call Claude with structured JSON output parsing.
  * Handles retries on 529/timeout, token tracking, cost logging.
+ * Enables prompt caching on system prompts by default.
  */
 export async function callClaude<T>(options: ClaudeCallOptions): Promise<ClaudeResponse<T>> {
+  checkDailyReset();
+
+  // Check result cache first
+  const taskKey = options.task;
+  const ttl = CACHE_TTLS[taskKey as keyof typeof CACHE_TTLS];
+  if (ttl) {
+    const cached = getCachedResult<T>(taskKey, options.userMessage, options.systemPrompt);
+    if (cached) {
+      logger.debug({ task: taskKey }, 'LLM result cache hit');
+      return cached;
+    }
+  }
+
   const modelConfig = getModelConfig(options.task);
   const maxTokens = options.maxTokens ?? modelConfig.maxTokens;
   const maxRetries = 1;
+  const usePromptCache = options.cacheSystemPrompt !== false;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const start = Date.now();
 
     try {
+      // Build system message with cache_control for prompt caching
+      const systemMessage: Anthropic.MessageCreateParams['system'] = usePromptCache
+        ? [{
+            type: 'text' as const,
+            text: options.systemPrompt,
+            cache_control: { type: 'ephemeral' as const },
+          }]
+        : options.systemPrompt;
+
       const response = await limiter.schedule(() =>
         client.messages.create({
           model: modelConfig.model,
           max_tokens: maxTokens,
-          system: options.systemPrompt,
+          system: systemMessage,
           messages: [{ role: 'user', content: options.userMessage }],
         })
       );
@@ -62,7 +188,22 @@ export async function callClaude<T>(options: ClaudeCallOptions): Promise<ClaudeR
       const latencyMs = Date.now() - start;
       const inputTokens = response.usage.input_tokens;
       const outputTokens = response.usage.output_tokens;
-      const cost = inputTokens * modelConfig.costPerInputToken + outputTokens * modelConfig.costPerOutputToken;
+      const cacheReadTokens = (response.usage as any).cache_read_input_tokens ?? 0;
+      const cacheCreationTokens = (response.usage as any).cache_creation_input_tokens ?? 0;
+
+      // Cost calculation: cached tokens are 90% cheaper for reads, 25% more for creation
+      const uncachedInputTokens = inputTokens - cacheReadTokens - cacheCreationTokens;
+      const cost =
+        uncachedInputTokens * modelConfig.costPerInputToken +
+        cacheReadTokens * modelConfig.costPerInputToken * 0.1 +  // 90% discount
+        cacheCreationTokens * modelConfig.costPerInputToken * 1.25 + // 25% surcharge
+        outputTokens * modelConfig.costPerOutputToken;
+
+      // Track savings from prompt caching
+      if (cacheReadTokens > 0) {
+        const savedCost = cacheReadTokens * modelConfig.costPerInputToken * 0.9;
+        estimatedSavingsToday += savedCost;
+      }
 
       // Log usage
       await logApiUsage({
@@ -85,11 +226,22 @@ export async function callClaude<T>(options: ClaudeCallOptions): Promise<ClaudeR
       // Parse JSON from response
       const parsed = parseJsonResponse<T>(rawText);
 
-      return {
+      const result: ClaudeResponse<T> = {
         parsed,
         raw: rawText,
-        usage: { inputTokens, outputTokens, cost },
+        usage: { inputTokens, outputTokens, cost, cacheReadTokens, cacheCreationTokens },
       };
+
+      // Store in result cache if TTL configured
+      if (ttl) {
+        cacheResult(taskKey, options.userMessage, options.systemPrompt, result, ttl);
+      }
+
+      if (cacheReadTokens > 0) {
+        logger.debug({ task: taskKey, cacheReadTokens, savedPct: ((cacheReadTokens / inputTokens) * 100).toFixed(0) }, 'Prompt cache hit');
+      }
+
+      return result;
     } catch (err: unknown) {
       const latencyMs = Date.now() - start;
       const statusCode = (err as any)?.status ?? 0;
