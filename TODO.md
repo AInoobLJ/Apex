@@ -530,7 +530,7 @@
 - [x] [FIX] Wire CalibrationEngine into live CORTEX synthesis — `applyCalibration()` called on every signal before fusion in `engine/cortex.ts`
 - [x] [FIX] Implement Kelly sizing formula: `f* = (p*b - q) / b`, quarter-Kelly (`* 0.25`), stored in Edge record and used by PaperTrader
 - [x] [FIX] Worker memory fix: `--max-old-space-size=2048` in `start-worker.sh`, `MAX_MARKETS` reduced from 25 to 15
-- [x] [FIX] Market matcher upgrade: Jaccard pre-filter → Claude Haiku semantic matching, permanent in-memory cache
+- [x] [FIX] Market matcher: ingestion-time LLM matching (once per new market) + MarketMatch table for permanent storage + arb-scan reads pre-computed matches (zero LLM)
 - [x] [FIX] Consolidate signal fusion: `engine/cortex.ts` now delegates to canonical `fuseSignals()` from `@apex/cortex` — no duplicate fusion logic
 - [x] [FIX] Add standalone `@@index([createdAt])` on Signal model in Prisma schema
 - [x] [FIX] Analysis worker lock duration increased to 30 min with per-market lock extension for long LLM pipeline runs
@@ -550,6 +550,14 @@
 - [x] [FIX] Add NWS Weather API (api.weather.gov) context provider for WEATHER-HAWK — forecast IS the answer for short-range weather
 - [x] [FIX] Add CourtListener API (courtlistener.com) context provider for LEGAL-EAGLE — free case law search
 - [x] [FIX] Expand FRED series: T5YIE (breakeven inflation), ICSA (initial claims), UMCSENT (consumer sentiment)
+
+### LLM Cost Controls
+
+- [x] [FIX] Hard $20/day budget kill switch — `shouldAllowCall()` checked BEFORE every `callClaude()`, blocks when spend >= $20
+- [x] [FIX] Adaptive rate limiting: 100 calls/hr normal, 50 at >50% budget, 10 at >80%
+- [x] [FIX] MarketMatch table: matches computed ONCE during ingestion, arb-scan does zero LLM calls
+- [x] [FIX] Pipeline market scope: volume >$500, TTR 1-90 days, 6h dedup, MAX_MARKETS=10
+- [x] [FIX] Eliminated 12,600 SCREEN_MARKET calls/day ($18.50) from arb-scan LLM matching
 
 ### Discussed But Not Built
 

@@ -4,6 +4,7 @@ import { kalshiClient } from './kalshi-client';
 import { polymarketClient } from './polymarket-client';
 import type { PredictionMarketAdapter, NormalizedMarket } from '@apex/shared';
 import { reclassifyMarket } from './category-classifier';
+import { matchNewMarket } from './market-matcher';
 
 // Re-export for backward compatibility
 export { detectCategory } from './category-detector';
@@ -51,6 +52,13 @@ async function syncAdapter(adapter: PredictionMarketAdapter): Promise<number> {
 async function upsertNormalizedMarket(m: NormalizedMarket): Promise<void> {
   // Reclassify OTHER markets using keyword patterns
   const category = reclassifyMarket(m.title, m.category);
+
+  // Check if market already exists (to detect new markets for cross-platform matching)
+  const existingMarket = await prisma.market.findUnique({
+    where: { platform_platformMarketId: { platform: m.platform, platformMarketId: m.platformMarketId } },
+    select: { id: true },
+  });
+  const isNewMarket = !existingMarket;
 
   const market = await prisma.market.upsert({
     where: {
@@ -115,6 +123,13 @@ async function upsertNormalizedMarket(m: NormalizedMarket): Promise<void> {
     await prisma.priceSnapshot.create({
       data: { marketId: market.id, yesPrice: yesContract.lastPrice, volume: m.volume },
     });
+  }
+
+  // Cross-platform matching: when a new market appears, find matches on the other platform.
+  // This runs ONCE per new market (not every sync cycle). Results stored permanently in MarketMatch table.
+  if (isNewMarket && m.status === 'ACTIVE' && (m.volume ?? 0) >= 100) {
+    matchNewMarket({ id: market.id, platform: m.platform, title: m.title })
+      .catch(err => logger.debug({ err: (err as Error).message, marketId: market.id }, 'Market matching failed (non-critical)'));
   }
 }
 

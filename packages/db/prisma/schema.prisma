@@ -92,6 +92,8 @@ model Market {
   paperPositions    PaperPosition[]
   alerts            Alert[]
   opportunities     Opportunity[]
+  kalshiMatches     MarketMatch[]  @relation("kalshiMatch")
+  polymarketMatches MarketMatch[]  @relation("polymarketMatch")
 
   @@unique([platform, platformMarketId])
   @@index([status])
@@ -628,4 +630,23 @@ model CategoryBudget {
   updatedAt       DateTime       @updatedAt
 
   @@unique([category])
+}
+
+// ── Cross-Platform Market Matching ──────────────────
+// Pre-computed during ingestion (one LLM call per new market, cached forever).
+// Arb scan reads this table — zero LLM calls at runtime.
+model MarketMatch {
+  id                  String   @id @default(cuid())
+  kalshiMarketId      String
+  kalshiMarket        Market   @relation("kalshiMatch", fields: [kalshiMarketId], references: [id])
+  polymarketMarketId  String
+  polymarketMarket    Market   @relation("polymarketMatch", fields: [polymarketMarketId], references: [id])
+  matchConfidence     Float    // 0-1 similarity score (Jaccard or LLM)
+  matchMethod         String   @default("jaccard") // "jaccard" | "llm"
+  matchedAt           DateTime @default(now())
+
+  @@unique([kalshiMarketId, polymarketMarketId])
+  @@index([kalshiMarketId])
+  @@index([polymarketMarketId])
+  @@index([matchConfidence])
 }

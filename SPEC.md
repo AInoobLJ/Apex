@@ -1918,17 +1918,27 @@ function calculateNetArb(
 
 **Market matcher** (`apps/api/src/services/market-matcher.ts`):
 
-Two-stage matching with LLM semantic verification:
-1. **Stage 1 — Jaccard pre-filter**: Fast word-overlap similarity (threshold ≥ 0.25) to identify candidate pairs
-2. **Stage 2 — Claude Haiku matching**: Batches candidate pairs (up to 20 per call) and scores semantic similarity (0-1). Uses `SCREEN_MARKET` LLM task tier.
-3. **Permanent cache**: Results cached in-memory for the worker lifetime (market titles never change). Eliminates redundant LLM calls across arb scan cycles.
+**Ingestion-time matching** (one LLM call per new market, stored permanently):
+1. When a new market is created during market-sync, `matchNewMarket()` is called
+2. **Jaccard pre-filter**: finds top 5 candidates from the other platform (threshold ≥ 0.35)
+3. If best Jaccard ≥ 0.80: store match directly (no LLM needed)
+4. If 0.35-0.80: **one Claude Haiku call** to verify top candidates
+5. Results stored permanently in `MarketMatch` table (never re-computed)
 
-```typescript
-async function findMatchingMarkets(
-  kalshiMarkets: Market[],
-  polymarketMarkets: Market[],
-  threshold?: number  // default 0.5
-): Promise<MarketMatch[]>;
+**Arb-scan lookup** (zero LLM calls, pure DB read):
+- `getPrecomputedMatches()` reads from `MarketMatch` table
+- Arb scan runs every 60 seconds with **zero LLM cost** — just price comparison math
+
+**MarketMatch table:**
+```prisma
+model MarketMatch {
+  kalshiMarketId      String
+  polymarketMarketId  String
+  matchConfidence     Float    // 0-1 similarity
+  matchMethod         String   // "jaccard" | "llm"
+  matchedAt           DateTime
+  @@unique([kalshiMarketId, polymarketMarketId])
+}
 ```
 
 **Signal characteristics:**

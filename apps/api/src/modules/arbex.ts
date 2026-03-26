@@ -2,7 +2,7 @@ import { SignalOutput } from '@apex/shared';
 import { syncPrisma as prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { calculateKalshiFee, calculatePolymarketFee, calculateNetArb } from '../services/fee-calculator';
-import { findMatchingMarkets, MarketMatch } from '../services/market-matcher';
+import { getPrecomputedMatches, MarketMatch } from '../services/market-matcher';
 import type { Platform, Market, Contract } from '@apex/db';
 
 // ── Types ──
@@ -125,8 +125,8 @@ async function scanCrossPlatformArbs(
 ): Promise<ArbOpportunity[]> {
   const arbs: ArbOpportunity[] = [];
 
-  // Find matching markets
-  const matches = await findMatchingMarkets(kalshiMarkets, polymarketMarkets, MIN_CROSS_PLATFORM_SIMILARITY);
+  // Look up pre-computed matches from MarketMatch table — ZERO LLM calls
+  const matches = await getPrecomputedMatches(MIN_CROSS_PLATFORM_SIMILARITY);
 
   for (const match of matches) {
     const kalshi = kalshiMarkets.find(m => m.id === match.kalshiMarketId);
