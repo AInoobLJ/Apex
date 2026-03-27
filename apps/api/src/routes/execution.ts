@@ -111,13 +111,17 @@ export default async function executionRoutes(fastify: FastifyInstance) {
   });
 
   // POST /execution/kill-switch — toggle TRADEX_ENABLED
+  // SECURITY: strict boolean validation — string "true" must NOT enable trading
   fastify.post('/execution/kill-switch', async (request) => {
-    const body = request.body as { enabled: boolean };
+    const body = request.body as { enabled: unknown };
+    // Strict boolean: only actual boolean `true` enables trading.
+    // String "true", number 1, or any other truthy value is rejected.
+    const enabled = body.enabled === true;
     const previousConfig = await getConfig('tradex_enabled');
     const previousValue = previousConfig != null ? String(previousConfig) : 'false';
-    const newValue = String(body.enabled);
+    const newValue = String(enabled);
 
-    await setConfig('tradex_enabled', body.enabled);
+    await setConfig('tradex_enabled', enabled);
 
     // Log to AuditLog
     await prisma.auditLog.create({
@@ -128,7 +132,7 @@ export default async function executionRoutes(fastify: FastifyInstance) {
       },
     });
 
-    return { tradexEnabled: body.enabled };
+    return { tradexEnabled: enabled };
   });
 
   // GET /execution/kill-switch — get current kill switch state

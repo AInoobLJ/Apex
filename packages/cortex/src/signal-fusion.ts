@@ -70,6 +70,7 @@ function timeDecay(signal: RawSignal): number {
 
 /**
  * Fuse multiple signals into a single probability estimate.
+ * Validates all inputs — invalid signals are excluded with a warning, not a crash.
  */
 export function fuseSignals(signals: RawSignal[]): FusedSignal {
   if (signals.length === 0) {
@@ -82,8 +83,35 @@ export function fuseSignals(signals: RawSignal[]): FusedSignal {
     };
   }
 
+  // ── Input validation: exclude bad signals instead of crashing ──
+  const validSignals = signals.filter(s => {
+    if (!Number.isFinite(s.probability) || s.probability < 0 || s.probability > 1) {
+      console.warn(`[fuseSignals] Excluding ${s.moduleId}: invalid probability ${s.probability}`);
+      return false;
+    }
+    if (!Number.isFinite(s.confidence) || s.confidence < 0 || s.confidence > 1) {
+      console.warn(`[fuseSignals] Excluding ${s.moduleId}: invalid confidence ${s.confidence}`);
+      return false;
+    }
+    if (!(s.createdAt instanceof Date) || isNaN(s.createdAt.getTime())) {
+      console.warn(`[fuseSignals] Excluding ${s.moduleId}: invalid createdAt`);
+      return false;
+    }
+    return true;
+  });
+
+  if (validSignals.length === 0) {
+    return {
+      probability: 0.5,
+      confidence: 0,
+      contributingModules: [],
+      agreementScore: 0,
+      reasoning: 'All signals had invalid values',
+    };
+  }
+
   // Calculate decayed weights
-  const contributions = signals.map(s => {
+  const contributions = validSignals.map(s => {
     const baseWeight = MODULE_WEIGHTS[s.moduleId] || 0.05;
     const decay = timeDecay(s);
     const effectiveWeight = baseWeight * s.confidence * decay;
@@ -91,8 +119,8 @@ export function fuseSignals(signals: RawSignal[]): FusedSignal {
     return {
       moduleId: s.moduleId,
       probability: s.probability,
-      weight: effectiveWeight,
-      decayedConfidence: s.confidence * decay,
+      weight: Number.isFinite(effectiveWeight) ? effectiveWeight : 0,
+      decayedConfidence: Number.isFinite(s.confidence * decay) ? s.confidence * decay : 0,
     };
   });
 

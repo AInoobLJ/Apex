@@ -26,6 +26,7 @@ function getKey(moduleId: string, category: string, bucket: string): string {
 
 /**
  * Apply calibration correction to a probability estimate.
+ * Validates input probability — NaN/out-of-range returns uncorrected 0.5.
  */
 export function applyCalibration(
   probability: number,
@@ -33,6 +34,12 @@ export function applyCalibration(
   category: string,
   daysToResolution: number
 ): { calibrated: number; correction: number; sampleSize: number } {
+  // Input validation
+  if (!Number.isFinite(probability) || probability < 0 || probability > 1) {
+    console.warn(`[applyCalibration] Invalid probability ${probability} for ${moduleId}/${category} — returning 0.5`);
+    return { calibrated: 0.5, correction: 0, sampleSize: 0 };
+  }
+
   const bucket = daysToResolution < 1 ? 'hours'
     : daysToResolution < 7 ? 'days'
     : daysToResolution < 30 ? 'weeks'
@@ -44,6 +51,12 @@ export function applyCalibration(
   if (!record || record.sampleSize < 10) {
     // Not enough data — no correction
     return { calibrated: probability, correction: 0, sampleSize: record?.sampleSize ?? 0 };
+  }
+
+  // Validate stored correction is finite
+  if (!Number.isFinite(record.avgOverestimate)) {
+    console.warn(`[applyCalibration] Corrupt calibration record for ${key} — skipping correction`);
+    return { calibrated: probability, correction: 0, sampleSize: record.sampleSize };
   }
 
   // Apply correction: if module overestimates by 8%, subtract 8%
@@ -108,11 +121,27 @@ export function recalibrate(resolvedData: {
 
 /**
  * Load calibration data from persisted records.
+ * Validates each record — skips corrupt entries instead of crashing.
  */
 export function loadCalibration(records: CalibrationRecord[]): void {
+  if (!Array.isArray(records)) {
+    console.warn('[loadCalibration] Expected array, got', typeof records);
+    return;
+  }
+  let loaded = 0;
+  let skipped = 0;
   for (const r of records) {
+    // Validate required fields
+    if (!r.moduleId || !r.category || !r.timeToResolutionBucket) { skipped++; continue; }
+    if (!Number.isFinite(r.avgOverestimate) || !Number.isFinite(r.avgAbsError) || !Number.isFinite(r.brierScore)) { skipped++; continue; }
+    if (!Number.isFinite(r.sampleSize) || r.sampleSize < 0) { skipped++; continue; }
+
     const key = getKey(r.moduleId, r.category, r.timeToResolutionBucket);
     calibrationTable.set(key, r);
+    loaded++;
+  }
+  if (skipped > 0) {
+    console.warn(`[loadCalibration] Loaded ${loaded} records, skipped ${skipped} corrupt entries`);
   }
 }
 

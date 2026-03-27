@@ -68,6 +68,19 @@ function polymarketFee(entryPrice: number): number {
 export function scoreOpportunity(input: ScoringInput): OpportunityScore {
   const { fusedProbability, fusedConfidence, marketPrice, daysToResolution, platform, volume } = input;
 
+  // ── Input validation ──
+  // If any critical input is NaN/invalid, return a safe zero-score (no trade)
+  if (!Number.isFinite(fusedProbability) || fusedProbability < 0 || fusedProbability > 1 ||
+      !Number.isFinite(fusedConfidence) || fusedConfidence < 0 || fusedConfidence > 1 ||
+      !Number.isFinite(marketPrice) || marketPrice <= 0 || marketPrice >= 1 ||
+      !Number.isFinite(daysToResolution) || daysToResolution <= 0) {
+    return {
+      edgeMagnitude: 0, edgeDirection: 'BUY_YES', expectedValue: 0, capitalEfficiency: 0,
+      feeDrag: 1, netEdge: 0, rank: 0, kellyFraction: 0, isActionable: false,
+      reasoning: `Invalid input: prob=${fusedProbability}, conf=${fusedConfidence}, price=${marketPrice}, days=${daysToResolution}`,
+    };
+  }
+
   // ── Edge calculation ──
   const rawEdge = fusedProbability - marketPrice;
   const edgeMagnitude = Math.abs(rawEdge);

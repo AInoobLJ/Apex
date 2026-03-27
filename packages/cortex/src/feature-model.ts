@@ -269,18 +269,33 @@ export function predict(fv: FeatureVector): { probability: number; confidence: n
   const flat = flattenFeatures(fv);
   const model = currentModel;
 
+  // Validate model weights aren't corrupted (NaN/Infinity)
+  if (!Number.isFinite(model.intercept)) {
+    console.warn('[FeatureModel.predict] Model intercept is NaN/Infinity — falling back to prior');
+    return { probability: 0.5, confidence: 0.1, featureImportance: [] };
+  }
+
   let logit = model.intercept;
   const importance: { feature: string; contribution: number }[] = [];
 
   for (const [feature, weight] of Object.entries(model.weights)) {
     const value = flat[feature];
-    if (value !== undefined && !isNaN(value)) {
+    // Only include features that are valid finite numbers on both sides
+    if (value !== undefined && Number.isFinite(value) && Number.isFinite(weight)) {
       const contribution = weight * value;
-      logit += contribution;
-      if (Math.abs(contribution) > 0.01) {
-        importance.push({ feature, contribution });
+      if (Number.isFinite(contribution)) {
+        logit += contribution;
+        if (Math.abs(contribution) > 0.01) {
+          importance.push({ feature, contribution });
+        }
       }
     }
+  }
+
+  // If logit is NaN/Infinity (corrupted model), fall back to prior
+  if (!Number.isFinite(logit)) {
+    console.warn('[FeatureModel.predict] Logit is NaN/Infinity — falling back to prior');
+    return { probability: 0.5, confidence: 0.1, featureImportance: [] };
   }
 
   const probability = Math.max(0.01, Math.min(0.99, sigmoid(logit)));
@@ -456,13 +471,37 @@ export function trainModel(
  * Called on worker startup to restore trained model.
  */
 export function loadModel(serialized: { intercept: number; weights: Record<string, number>; trainedAt: string; sampleSize: number; accuracy: number; validationAccuracy?: number }): void {
+  // Validate deserialized data — a corrupted DB row should not infect predictions
+  if (!Number.isFinite(serialized.intercept)) {
+    console.warn('[loadModel] Corrupt intercept — keeping default weights');
+    return;
+  }
+  if (!serialized.weights || typeof serialized.weights !== 'object') {
+    console.warn('[loadModel] Missing or invalid weights — keeping default weights');
+    return;
+  }
+
+  // Validate all weights are finite numbers. Remove any NaN/Infinity entries.
+  const cleanWeights: Record<string, number> = {};
+  let badCount = 0;
+  for (const [k, v] of Object.entries(serialized.weights)) {
+    if (Number.isFinite(v)) {
+      cleanWeights[k] = v;
+    } else {
+      badCount++;
+    }
+  }
+  if (badCount > 0) {
+    console.warn(`[loadModel] Removed ${badCount} corrupt weight entries (NaN/Infinity)`);
+  }
+
   currentModel = {
     intercept: serialized.intercept,
-    weights: serialized.weights,
+    weights: cleanWeights,
     trainedAt: new Date(serialized.trainedAt),
-    sampleSize: serialized.sampleSize,
-    accuracy: serialized.accuracy,
-    validationAccuracy: serialized.validationAccuracy ?? serialized.accuracy, // backward compat
+    sampleSize: Number.isFinite(serialized.sampleSize) ? serialized.sampleSize : 0,
+    accuracy: Number.isFinite(serialized.accuracy) ? serialized.accuracy : 0.5,
+    validationAccuracy: Number.isFinite(serialized.validationAccuracy) ? serialized.validationAccuracy! : (Number.isFinite(serialized.accuracy) ? serialized.accuracy : 0.5),
   };
 }
 

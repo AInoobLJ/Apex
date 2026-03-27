@@ -3300,3 +3300,30 @@ Computed from `market.createdAt` instead of `signal.createdAt`. At training time
 - 25 samples < 30 min → model unchanged ✅
 - 50 random samples → training 60%, validation 50% → model rejected (< 55%) ✅
 - FEATURE_SCHEMA_VERSION = 2 ✅
+
+### V2.33 Input Validation Across Cortex (2026-03-27 PM)
+
+**Problem:** No exported function in `packages/cortex` validated its inputs. NaN/Infinity propagated silently, corrupted DB rows infected predictions, and the kill-switch accepted string `"true"`.
+
+**Fixes across all cortex public APIs:**
+
+| Function | Validation Added |
+|----------|-----------------|
+| `fuseSignals()` | Excludes signals with NaN/out-of-range probability/confidence instead of crashing |
+| `applyCalibration()` | Validates input probability [0,1]; validates stored corrections are finite |
+| `loadCalibration()` | Validates each record; skips corrupt entries; logs count |
+| `scoreOpportunity()` | Validates all inputs; returns zero-score (no trade) for NaN/invalid |
+| `predict()` | Validates intercept and weights are finite; falls back to prior on NaN |
+| `loadModel()` | Validates deserialized weights; removes NaN/Infinity entries; rejects corrupt intercept |
+| Kill-switch POST | Strict boolean: `body.enabled === true` only; rejects `"true"`, `1`, etc. |
+
+**New validation utilities in `packages/shared`:**
+- `isFiniteNumber()`, `isValidProbability()`, `safeNumber()`, `safeProbability()`
+- `validateWeights()`, `strictBoolean()`
+
+**Test results:**
+- NaN signal in fuseSignals → excluded, remaining signals fused correctly ✅
+- Invalid probability (1.5) in scoreOpportunity → zero score, not actionable ✅
+- NaN model intercept → rejected, default weights kept ✅
+- NaN weight entries → removed, model still works ✅
+- Kill-switch string "true" → rejected (only boolean true accepted) ✅

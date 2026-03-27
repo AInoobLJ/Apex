@@ -751,6 +751,14 @@
 - [x] [FIX] Minimum training samples raised from 20 to 30.
 - [x] [VERIFY] Tests pass: insufficient samples → defaults, random data → model rejected, schema version exported.
 
+### Input Validation Across Cortex (2026-03-27 PM)
+
+- [x] [HIGH] Added input validation to all cortex public APIs: fuseSignals, applyCalibration, loadCalibration, scoreOpportunity, predict, loadModel. NaN/Infinity/out-of-range inputs are rejected or excluded instead of propagating silently.
+- [x] [HIGH] Added validation utilities to packages/shared: isFiniteNumber, isValidProbability, safeNumber, safeProbability, validateWeights, strictBoolean.
+- [x] [HIGH] Fixed kill-switch type validation: POST /execution/kill-switch now uses strict boolean comparison (`body.enabled === true`). String "true" or number 1 are rejected.
+- [x] [HIGH] loadModel validates deserialized weights from DB — removes NaN/Infinity entries, rejects corrupt intercept, logs warnings.
+- [x] [VERIFY] All validation tests pass: NaN signals excluded, invalid probabilities rejected, corrupt weights cleaned, kill-switch string rejected.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)
