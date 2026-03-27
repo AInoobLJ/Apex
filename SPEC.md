@@ -3039,4 +3039,53 @@ The `buildActionabilitySummary()` now reports confidence failures explicitly (e.
 
 **Known issues:**
 - LLM cost $24.47/day — exceeds $5/day budget target. Investigate whether HARD_LIMIT is enforcing or just logging.
-- No `start-worker.sh` auto-restart script — worker runs as bare `nohup` process.
+- ~~No `start-worker.sh` auto-restart script~~ — FIXED: `start-worker.sh` added with 5s cooldown, 60s backoff after 10 rapid restarts.
+
+### V2.24 Fuku Predictions API Integration — Data-First Sports Analysis (2026-03-27 PM)
+
+**Problem:** SPORTS-EDGE was using LLM-based feature extraction for sports markets — expensive and less accurate than structured numeric data. The Odds API provides odds but not predictions, and has a 500/month request limit.
+
+**Solution:** Integrated Fuku Predictions API (`cbb-predictions-api-nzpk.onrender.com`) as the primary data source for CBB, NBA, NHL, and Soccer. Fuku aggregates 20+ data sources and provides pre-computed predictions, team metrics, and market edges — structured numeric features that bypass the LLM entirely.
+
+**Architecture — priority chain:**
+1. **Fuku (data passthrough):** For CBB/NBA/NHL/Soccer, fetch pre-computed predictions. If Fuku has a matching game, return structured features directly — **no LLM call, zero cost**.
+2. **Odds API + ESPN (LLM fallback):** For sports Fuku doesn't cover (golf, tennis, MMA, etc.), fall back to existing flow: fetch odds/injuries → LLM feature extraction.
+
+**New files:**
+- `apps/api/src/services/data-sources/fuku-data.ts` — Fuku API client with:
+  - Sport detection (CBB, NBA, NHL, Soccer, with team name fallback)
+  - Tiered caching: predictions 30min, teams/rankings 6hr
+  - Team matching (normalized names, partial/last-word matching)
+  - Structured feature extraction: `FukuFeatures` → `DomexAgentResult`
+  - Health check on startup
+  - 15s timeout (Render free tier)
+
+**Modified files:**
+- `apps/api/src/modules/domex-agents/sports-edge.ts` — Complete rewrite:
+  - No longer uses `createDomexAgent` directly — custom `DomexAgent` implementation
+  - Tries Fuku first; if features returned, converts to `DomexAgentResult` without LLM
+  - Falls back to `llmFallbackAgent` (original Odds API + ESPN + LLM flow) when Fuku has no data
+  - `requireContext: true` preserved on fallback — never hallucinates
+
+**Feature mapping (Fuku → FeatureModel):**
+| Feature | Source | Description |
+|---------|--------|-------------|
+| `projectedSpread` | Fuku model | Fuku's projected point spread |
+| `spreadEdge` | Fuku - book | Difference from market spread |
+| `projectedTotal` | Fuku model | Projected combined score |
+| `totalEdge` | Fuku - book | Difference from market total |
+| `offensiveEfficiencyDiff` | Team profiles | Home off rating - away off rating |
+| `defensiveEfficiencyDiff` | Team profiles | Home def rating - away def rating |
+| `tempoDiff` | Team profiles | Pace differential |
+| `homeTeamRank` / `awayTeamRank` | Rankings | Composite team rank |
+| `homeWinPct` / `awayWinPct` | Team profiles | Season win percentages |
+| `homeNetRating` / `awayNetRating` | Team profiles | Net efficiency rating |
+| `fukuDataPassthrough` | Marker | `true` when no LLM was used |
+
+**Odds API preservation:** CBB/NBA/NHL/Soccer predictions now come from Fuku (free, unlimited). Odds API quota (500/month) reserved for uncovered sports only.
+
+**Test results:**
+- NBA Celtics vs Hawks: ✅ Fuku passthrough — Score 118.3-109, Spread +9.3, Ranks #3 vs #13
+- CBB Duke vs St John's: ✅ Fuku passthrough — Spread -5.9, Book -6.5, Edge -0.6
+- NHL Sabres vs Red Wings: ✅ Fuku passthrough — Spread +2.91, Total 6.2
+- Golf (uncovered): ✅ null features → correct LLM fallback

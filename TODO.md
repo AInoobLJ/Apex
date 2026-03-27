@@ -688,7 +688,15 @@
 - [x] [VERIFY] Module health (last 24h signals): COGEX 186 ✅ | FLOWEX 6,675 ✅ | LEGEX 146 ✅ | DOMEX 125 ✅ | ALTEX 64 ✅ | REFLEX 30 ✅ | SPEEDEX 6,572 ✅ | ARBEX 672 ✅. All 8 active modules producing signals.
 - [x] [VERIFY] 24h stats: 13,352 signals, 488 edges, 267 actionable (>=20% conf), 12 paper trades.
 - [ ] [FLAG] **LLM cost $24.47/day — still over $5/day budget.** Budget cap was set but high signal volume (13K+ signals/day) is driving cost. Need to investigate: is the HARD_LIMIT actually blocking calls, or just logging? Check if SCREEN_MARKET calls are still the main cost driver.
-- [ ] [FLAG] **No `start-worker.sh` auto-restart script.** Worker runs as a bare `nohup` process — if it crashes overnight, no auto-restart. Consider adding pm2, systemd, or a simple restart loop.
+- [x] [FIX] Added `start-worker.sh` auto-restart loop: 5s cooldown, 60s backoff after 10 rapid restarts, SIGTERM trap for clean shutdown. Worker now survives crashes overnight.
+
+### Fuku Predictions API Integration (2026-03-27 PM)
+
+- [x] [NEW] Created `fuku-data.ts`: Fuku Predictions API client (CBB, NBA, NHL, Soccer). Pre-computed predictions with projected scores, spreads, totals, team rankings, efficiency ratings. Tiered cache: predictions 30min, teams/rankings 6hr. 15s timeout (Render free tier). Health check on startup.
+- [x] [NEW] Rewrote `sports-edge.ts` as hybrid data-first agent: tries Fuku first (data passthrough, zero LLM cost), falls back to Odds API + ESPN + LLM for uncovered sports.
+- [x] [NEW] Feature mapping: 18 structured features from Fuku → `DomexAgentResult`. Includes `fukuDataPassthrough: true` marker when no LLM call was made.
+- [x] [FIX] Odds API preservation: CBB/NBA/NHL/Soccer now served by Fuku (free, unlimited). 500/month Odds API quota reserved for golf, tennis, MMA, etc.
+- [x] [VERIFY] End-to-end tests: NBA Celtics vs Hawks ✅, CBB Duke vs St Johns ✅, NHL Sabres vs Red Wings ✅, Golf (uncovered) correctly falls back to LLM ✅.
 
 ### Discussed But Not Built
 
