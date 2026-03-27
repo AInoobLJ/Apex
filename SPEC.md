@@ -3217,3 +3217,19 @@ kill $(cat /tmp/apex-all.pid)  # stop all from another terminal
 - Chelsea Clinton nomination → POLITICS ✅ (still correct)
 - Texas Republican Primary → POLITICS ✅ (uses "republican primary" phrase)
 - All other categories preserved ✅
+
+### V2.30 Targeted Cleanup of Stale Signals on Recategorized Markets (2026-03-27 PM)
+
+**Problem:** After recategorizing 304 POLITICS→SPORTS markets, old signals and edges generated under the wrong category were still in the database. GEO-INTEL signals on sports markets, wrong DOMEX agent routing, etc.
+
+**Fix:** Targeted deletion — only cleared signals/edges/paper positions for the 13 recategorized SPORTS markets that had stale signals. All other markets' signals preserved.
+
+**Deleted:** 68 signals, 96 edges, 2 paper positions (on the 13 recategorized markets)
+**Preserved:** 2,607 signals, 4 edges, 2 paper positions (on non-recategorized markets)
+
+**Verified:**
+- Arsenal EPL: 0 signals ✅ (will regenerate with SPORTS-EDGE routing)
+- Schauffele Masters: 0 signals ✅
+- POLITICS signals preserved: 13 ✅ (Viktor Orbán, Texas Primary, etc.)
+- SPORTS-EDGE correctly detecting FUTURES and returning null on recategorized markets ✅
+- Other modules (ALTEX, LEGEX, COGEX) still processing these markets ✅

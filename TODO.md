@@ -731,6 +731,8 @@
 - [x] [FIX] Root cause: Polymarket description "primary resolution source" triggered POLITICS_OVERRIDE `\bprimary\b` → 304 sports markets miscategorized.
 - [x] [FIX] Removed standalone `\bprimary\b`; added SPORTS_OVERRIDE as Tier 0a (title-only); expanded Tier 2 sports fallback with 60+ teams.
 - [x] [FIX] Recategorized 420 markets: 304 POLITICS→SPORTS, 33 POLITICS→CULTURE, 70 POLITICS→OTHER, 12 POLITICS→SCIENCE. 14/14 tests pass.
+- [x] [FIX] Targeted cleanup: deleted 68 stale signals, 96 edges, 2 paper positions from 13 recategorized SPORTS markets. Preserved all non-recategorized market data. Arsenal/Schauffele signals cleared, POLITICS signals intact.
+- [x] [VERIFY] SPORTS-EDGE correctly routing on recategorized markets: FUTURES detected → null, other modules still processing.
 
 ### Discussed But Not Built
 
