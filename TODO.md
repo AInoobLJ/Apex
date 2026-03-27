@@ -698,6 +698,13 @@
 - [x] [FIX] Odds API preservation: CBB/NBA/NHL/Soccer now served by Fuku (free, unlimited). 500/month Odds API quota reserved for golf, tennis, MMA, etc.
 - [x] [VERIFY] End-to-end tests: NBA Celtics vs Hawks ✅, CBB Duke vs St Johns ✅, NHL Sabres vs Red Wings ✅, Golf (uncovered) correctly falls back to LLM ✅.
 
+### MATCH vs FUTURES Market Type Detection (2026-03-27 PM)
+
+- [x] [FIX] Added `detectSportsMarketType()`: classifies sports markets as MATCH or FUTURES before any data fetch. FUTURES markets (league winners, MVPs, tournaments, championships) return null immediately — prevents match-odds-to-futures confusion (e.g., Napoli 92.6% bug).
+- [x] [FIX] FUTURES patterns: league/championship winners, tournament/cup winners, MVP/awards, playoffs, relegation, closesAt > 60 days.
+- [x] [NEW] `sportsDataSource` and `sportsMarketType` tags in signal features — enables filtering bad signals from FeatureModel training data.
+- [x] [VERIFY] Tests: Napoli Serie A→null ✅, Liverpool CL→null ✅, Doncic MVP→null ✅, Celtics vs Hawks→Fuku passthrough ✅, Tiger Woods Masters→null ✅.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)

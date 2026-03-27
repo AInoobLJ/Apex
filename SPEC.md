@@ -3089,3 +3089,35 @@ The `buildActionabilitySummary()` now reports confidence failures explicitly (e.
 - CBB Duke vs St John's: ✅ Fuku passthrough — Spread -5.9, Book -6.5, Edge -0.6
 - NHL Sabres vs Red Wings: ✅ Fuku passthrough — Spread +2.91, Total 6.2
 - Golf (uncovered): ✅ null features → correct LLM fallback
+
+### V2.25 MATCH vs FUTURES Market Type Detection — Fix Match-Odds-to-Futures Confusion (2026-03-27 PM)
+
+**Problem:** SPORTS-EDGE/DOMEX produced a 92.6% probability signal for "Will Napoli win the 2025–26 Serie A league?" — a futures/outrights market. The signal was based on Napoli vs AC Milan single-match moneyline odds from The Odds API. Being favored to win one match does not mean 92.6% chance of winning the league title. CORTEX confidence was 17.9% (below 20% threshold) so no paper trade was created, but the signal polluted edge data.
+
+**Root cause:** The Napoli signal was generated at 02:26 AM ET, before the Fuku integration was deployed at 12:11 PM ET. It used the old Odds API h2h flow, which matched Napoli's next match and treated match moneyline odds as league-winner probability.
+
+**Fix — market type detection:** Added `detectSportsMarketType()` that classifies sports markets as MATCH or FUTURES before fetching any data:
+
+- **FUTURES markets** (league winners, championships, MVPs, tournaments, playoffs, relegation): SPORTS-EDGE returns `null` immediately. Match odds are never appropriate for futures.
+- **MATCH markets** (head-to-head games with "vs", "beat", "tonight"): Proceed normally with Fuku → Odds API fallback chain.
+- **UNKNOWN markets** (ambiguous): If Fuku returns no match, returns null (conservative — avoids match-odds-to-futures confusion).
+
+**FUTURES patterns detected:**
+- League/championship: "win Serie A", "win the Premier League", "win NBA championship"
+- Tournament/cup: "win Champions League", "win World Cup", "win March Madness"
+- Awards: "MVP", "Ballon d'Or", "Cy Young", "Heisman"
+- Season outcomes: "make the playoffs", "relegated", "finish top 4"
+- Time-based: closesAt > 60 days out with no MATCH indicators
+
+**dataSource tag:** All SPORTS-EDGE results now include `sportsDataSource` and `sportsMarketType` in features, enabling filtering of bad signals from training data:
+- `fuku` — Fuku API match predictions (data passthrough, no LLM)
+- `oddsapi-h2h` — The Odds API h2h match odds (LLM extraction)
+- `futures-blocked` — Futures market returned null
+- `no-data` — No data available
+
+**Test results:**
+- Napoli Serie A (FUTURES): ✅ null — blocked correctly
+- Liverpool Champions League (FUTURES): ✅ null — blocked correctly
+- Doncic NBA MVP (FUTURES): ✅ null — blocked correctly
+- Celtics vs Hawks (MATCH): ✅ Fuku passthrough, spread +9.3, dataSource=fuku
+- Tiger Woods Masters (FUTURES): ✅ null — blocked correctly
