@@ -3189,3 +3189,31 @@ The architecture already handles this correctly because:
 nohup ./start-all.sh &      # background (survives terminal close)
 kill $(cat /tmp/apex-all.pid)  # stop all from another terminal
 ```
+
+### V2.29 Fix Category Misclassification — "primary resolution source" False Positive (2026-03-27 PM)
+
+**Problem:** 304 sports markets (Arsenal EPL, Schauffele Masters, Champions League, NBA MVP, etc.) were categorized as POLITICS instead of SPORTS. GEO-INTEL agent was firing on sports markets and explicitly saying "this market is incorrectly categorized."
+
+**Root cause:** Polymarket's standard description template contains "The **primary** resolution source will be..." — and `POLITICS_OVERRIDE` contained `\bprimary\b` (intended for "political primary election"). Since `detectCategory()` runs keyword checks on `title + description`, the word "primary" in 960+ market descriptions triggered a false POLITICS classification.
+
+**Fix (3 changes):**
+
+1. **Removed standalone `\bprimary\b`** from `POLITICS_OVERRIDE` in both `category-detector.ts` and `category-classifier.ts`. Replaced with specific phrases: `primary election`, `republican primary`, `democratic primary`.
+
+2. **Added `SPORTS_OVERRIDE` as Tier 0a** — checked on **title only** (not description) before politics/finance/crypto. Contains unambiguous league names: NBA, NFL, MLB, NHL, MLS, EPL, Premier League, Champions League, Europa League, La Liga, Serie A, Bundesliga, Ligue 1, World Cup, World Series, Super Bowl, Stanley Cup, March Madness, Masters Tournament, PGA Tour, UFC, F1, Grand Prix.
+
+3. **Expanded Tier 2 sports fallback** — added 60+ NHL/NBA/NFL team names, plus missing terms: masters tournament, europa league, copa del rey, fa cup, ligue 1, copa america, ryder cup, f1, wimbledon, french open, australian open, ballon d'or, cy young, heisman, relegated, relegation, promotion.
+
+**Recategorization result:** 420 markets updated:
+- 304 POLITICS → SPORTS (the core fix)
+- 33 POLITICS → CULTURE
+- 70 POLITICS → OTHER
+- 12 POLITICS → SCIENCE
+- 1 POLITICS → CRYPTO
+
+**Test results (14/14 pass):**
+- Arsenal EPL → SPORTS ✅ (was POLITICS)
+- Schauffele Masters → SPORTS ✅ (was POLITICS)
+- Chelsea Clinton nomination → POLITICS ✅ (still correct)
+- Texas Republican Primary → POLITICS ✅ (uses "republican primary" phrase)
+- All other categories preserved ✅

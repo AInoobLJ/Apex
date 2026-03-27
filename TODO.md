@@ -726,6 +726,12 @@
 - [x] [FIX] Root cause of API crashes: Claude Preview sends SIGTERM on session restart. `start-all.sh` runs independently of Claude Preview.
 - [x] [VERIFY] All 8 dashboard pages load: Markets (19,689), Edges (17), Portfolio ($10K/4 paper positions), System, Crypto, Execution, Backtest, Settings.
 
+### Fix Category Misclassification (2026-03-27 PM)
+
+- [x] [FIX] Root cause: Polymarket description "primary resolution source" triggered POLITICS_OVERRIDE `\bprimary\b` → 304 sports markets miscategorized.
+- [x] [FIX] Removed standalone `\bprimary\b`; added SPORTS_OVERRIDE as Tier 0a (title-only); expanded Tier 2 sports fallback with 60+ teams.
+- [x] [FIX] Recategorized 420 markets: 304 POLITICS→SPORTS, 33 POLITICS→CULTURE, 70 POLITICS→OTHER, 12 POLITICS→SCIENCE. 14/14 tests pass.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)
