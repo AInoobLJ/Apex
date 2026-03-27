@@ -771,6 +771,14 @@
 - [x] [NEW] Test infrastructure: vitest in monorepo, `npm test` from root, all tests in 1.7s, zero external deps.
 - [x] [VERIFY] All 57 tests pass. Kelly BUY_YES/BUY_NO symmetric ✅, NaN exclusion ✅, all 7 preflight gates ✅, circuit breaker open/close ✅, arb preflight ✅.
 
+### Dependency Injection Interface Layer for Signal Modules (2026-03-27 PM)
+
+- [x] [NEW] Created `MarketDataProvider` and `LLMProvider` interfaces in packages/shared. Modules depend on interfaces, not implementations.
+- [x] [NEW] Created `PrismaDataProvider` and `ClaudeLLMProvider` concrete implementations in apps/api/src/providers/.
+- [x] [REFACTOR] Removed direct Prisma imports from COGEX, FLOWEX, ALTEX. Removed direct claude-client imports from REFLEX, LEGEX, ALTEX, DOMEX base-agent. All use injected providers.
+- [x] [FIX] Updated SignalModule base class to accept optional `{ dataProvider, llmProvider }` deps.
+- [x] [VERIFY] All 57 tests pass. Build clean. Worker starts and processes signals correctly.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)

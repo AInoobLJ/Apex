@@ -1,7 +1,5 @@
 import { SignalOutput, clampProbability } from '@apex/shared';
-import { syncPrisma as prisma } from '../lib/prisma';
-import { SignalModule, MarketWithData } from './base';
-import { OrderBookSnapshot } from '@apex/db';
+import { SignalModule, MarketWithData, ModuleDeps } from './base';
 
 interface FlowexMetadata {
   orderFlowImbalance: number;
@@ -22,6 +20,10 @@ interface BookLevel {
 export class FlowexModule extends SignalModule {
   readonly moduleId = 'FLOWEX' as const;
 
+  constructor(deps?: ModuleDeps) {
+    super(deps);
+  }
+
   protected async analyze(market: MarketWithData): Promise<SignalOutput | null> {
     const yesContract = market.contracts.find(c => c.outcome === 'YES');
     if (!yesContract || yesContract.lastPrice == null) return null;
@@ -29,11 +31,8 @@ export class FlowexModule extends SignalModule {
     const marketPrice = yesContract.lastPrice;
 
     // Get last 2 order book snapshots for this contract
-    const snapshots = await prisma.orderBookSnapshot.findMany({
-      where: { contractId: yesContract.id },
-      orderBy: { timestamp: 'desc' },
-      take: 2,
-    });
+    if (!this.dataProvider) return null;
+    const snapshots = await this.dataProvider.getOrderBookSnapshots(yesContract.id, 2);
 
     if (snapshots.length < 1) return null;
 
@@ -98,7 +97,7 @@ export class FlowexModule extends SignalModule {
   }
 
   // ── Order Flow Imbalance ──
-  private computeOFI(current: OrderBookSnapshot, previous: OrderBookSnapshot): number {
+  private computeOFI(current: { bids: unknown; asks: unknown }, previous: { bids: unknown; asks: unknown }): number {
     const currBids = current.bids as unknown as BookLevel[];
     const prevBids = previous.bids as unknown as BookLevel[];
     const currAsks = current.asks as unknown as BookLevel[];
@@ -121,11 +120,11 @@ export class FlowexModule extends SignalModule {
 
   // ── Move Classification ──
   private classifyMove(
-    current: OrderBookSnapshot,
-    previous: OrderBookSnapshot,
+    current: { midPrice?: number; totalBidDepth: number; totalAskDepth: number },
+    previous: { midPrice?: number; totalBidDepth: number; totalAskDepth: number },
     currentPrice: number
   ): 'LIQUIDITY' | 'INFORMATION' | 'UNKNOWN' {
-    const priceMove = Math.abs(current.midPrice - previous.midPrice);
+    const priceMove = Math.abs((current.midPrice ?? currentPrice) - (previous.midPrice ?? currentPrice));
     const prevTotalDepth = previous.totalBidDepth + previous.totalAskDepth;
     const currTotalDepth = current.totalBidDepth + current.totalAskDepth;
 
@@ -144,11 +143,9 @@ export class FlowexModule extends SignalModule {
 
   // ── VWAP Calculation ──
   private async computeVWAP(marketId: string, hours: number): Promise<number> {
-    const since = new Date(Date.now() - hours * 60 * 60 * 1000);
-    const snapshots = await prisma.priceSnapshot.findMany({
-      where: { marketId, timestamp: { gte: since } },
-      orderBy: { timestamp: 'asc' },
-    });
+    if (!this.dataProvider) return 0;
+    const hoursDays = hours / 24;
+    const snapshots = await this.dataProvider.getPriceSnapshots(marketId, Math.max(1, hoursDays));
 
     if (snapshots.length === 0) return 0.5; // default
 
@@ -156,7 +153,7 @@ export class FlowexModule extends SignalModule {
     let totalVolume = 0;
 
     for (let i = 1; i < snapshots.length; i++) {
-      const volumeDelta = Math.max(0, snapshots[i].volume - snapshots[i - 1].volume);
+      const volumeDelta = Math.max(0, (snapshots[i].volume ?? 0) - (snapshots[i - 1].volume ?? 0));
       if (volumeDelta > 0) {
         totalPriceVolume += snapshots[i].yesPrice * volumeDelta;
         totalVolume += volumeDelta;
@@ -173,3 +170,7 @@ export class FlowexModule extends SignalModule {
 }
 
 export const flowexModule = new FlowexModule();
+
+export function createFlowexModule(deps: ModuleDeps) {
+  return new FlowexModule(deps);
+}

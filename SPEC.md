@@ -3394,3 +3394,32 @@ Concurrent LLM calls did read-modify-write on the DB budget counter, allowing th
 |------|-------|--------|
 | `preflight.test.ts` | 10 | All 7 gates independently (RISK_GATE, BALANCE_CHECK × 2, EDGE_VALID × 2, FEE_CHECK, GRADUATION_CHECK, DAILY_LIMIT, POSITION_COUNT), all gates pass |
 | `manager.test.ts` | 5 | Circuit breaker opens after failures, open circuit fails fast, arb checks both platforms, arb preflight failure aborts all legs |
+
+### V2.36 Dependency Injection Interface Layer for Signal Modules (2026-03-27 PM)
+
+**Problem:** All signal modules directly import Prisma (`../lib/prisma`) and claude-client, making them impossible to test in isolation. Business logic coupled to infrastructure.
+
+**Solution:** Lighter-touch dependency injection — define provider interfaces in `packages/shared`, create concrete implementations in `apps/api/src/providers/`, refactor modules to accept providers instead of importing directly. Same directory structure, same runtime behavior, testable with mocks.
+
+**New interfaces in `packages/shared/src/module-interfaces.ts`:**
+- `MarketDataProvider`: `getPriceSnapshots()`, `getOrderBookSnapshots()`, `getResolvedMarkets()`
+- `LLMProvider`: `call<T>(opts)` → `{ parsed: T, raw, usage }`
+- Supporting types: `PriceSnapshotData`, `OrderBookSnapshotData`, `ResolvedMarketData`
+
+**New concrete providers in `apps/api/src/providers/`:**
+- `PrismaDataProvider` — wraps existing Prisma queries
+- `ClaudeLLMProvider` — wraps existing `callClaude()`
+
+**Modules refactored (direct imports removed):**
+| Module | Before | After |
+|--------|--------|-------|
+| COGEX | `import { syncPrisma } from '../lib/prisma'` | `this.dataProvider.getPriceSnapshots()` |
+| FLOWEX | `import { syncPrisma } from '../lib/prisma'` | `this.dataProvider.getOrderBookSnapshots()` |
+| REFLEX | `import { callClaude } from '../services/claude-client'` | `this.llmProvider.call()` |
+| LEGEX | `import { callClaude }` | `this.llmProvider.call()` |
+| ALTEX | `import { callClaude }` + `import { syncPrisma }` | Both replaced |
+| DOMEX base-agent | `import { callClaude }` | `opts.llmProvider.call()` with legacy fallback |
+
+**Base class updated:** `SignalModule` constructor now accepts optional `{ dataProvider?, llmProvider? }`.
+
+**Remaining:** ARBEX, SIGINT, NEXUS sub-modules still use direct Prisma (lower priority — can be migrated incrementally).

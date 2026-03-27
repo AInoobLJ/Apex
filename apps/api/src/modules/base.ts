@@ -1,4 +1,5 @@
 import { SignalOutput, ModuleId } from '@apex/shared';
+import type { MarketDataProvider, LLMProvider } from '@apex/shared';
 import { Market, Contract, PriceSnapshot, OrderBookSnapshot } from '@apex/db';
 import { logger } from '../lib/logger';
 
@@ -11,8 +12,20 @@ export interface MarketWithOrderBook extends MarketWithData {
   contracts: (Contract & { orderBookSnapshots: OrderBookSnapshot[] })[];
 }
 
+export interface ModuleDeps {
+  dataProvider?: MarketDataProvider;
+  llmProvider?: LLMProvider;
+}
+
 export abstract class SignalModule {
   abstract readonly moduleId: ModuleId;
+  protected dataProvider?: MarketDataProvider;
+  protected llmProvider?: LLMProvider;
+
+  constructor(deps?: ModuleDeps) {
+    this.dataProvider = deps?.dataProvider;
+    this.llmProvider = deps?.llmProvider;
+  }
 
   async run(market: MarketWithData): Promise<SignalOutput | null> {
     const start = Date.now();

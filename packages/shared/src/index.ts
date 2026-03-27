@@ -3,3 +3,4 @@ export * from './constants';
 export * from './utils';
 export * from './platform-adapter';
 export * from './llm-router';
+export * from './module-interfaces';

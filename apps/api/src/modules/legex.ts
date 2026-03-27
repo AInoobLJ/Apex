@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SignalOutput, clampProbability } from '@apex/shared';
-import { SignalModule, MarketWithData } from './base';
-import { callClaude } from '../services/claude-client';
+import { SignalModule, MarketWithData, ModuleDeps } from './base';
 import { logger } from '../lib/logger';
 
 const LEGEX_PROMPT = fs.readFileSync(
@@ -27,6 +26,10 @@ interface LegexAnalysisResult {
 export class LegexModule extends SignalModule {
   readonly moduleId = 'LEGEX' as const;
 
+  constructor(deps?: ModuleDeps) {
+    super(deps);
+  }
+
   protected async analyze(market: MarketWithData): Promise<SignalOutput | null> {
     // Skip markets without resolution text — use description as fallback
     const resolutionText = market.resolutionText || market.description;
@@ -42,7 +45,8 @@ export class LegexModule extends SignalModule {
 
     // TIER_2 deep analysis
     try {
-      const result = await callClaude<LegexAnalysisResult>({
+      if (!this.llmProvider) throw new Error('LEGEX requires llmProvider');
+      const result = await this.llmProvider.call<LegexAnalysisResult>({
         task: 'LEGEX_ANALYSIS',
         systemPrompt: LEGEX_PROMPT,
         userMessage: this.buildAnalysisPrompt(market, marketPrice),
@@ -85,7 +89,8 @@ export class LegexModule extends SignalModule {
   /** TIER_1 screen — cheap check if resolution is worth deep analysis */
   private async screenMarket(market: MarketWithData): Promise<boolean> {
     try {
-      const result = await callClaude<LegexScreenResult>({
+      if (!this.llmProvider) throw new Error('LEGEX requires llmProvider');
+      const result = await this.llmProvider.call<LegexScreenResult>({
         task: 'SCREEN_MARKET',
         systemPrompt: 'You screen prediction market resolution text for ambiguity. Respond with JSON: {"isAmbiguous": boolean, "reason": "string"}',
         userMessage: `Is this resolution text potentially ambiguous or commonly misunderstood?\n\nTitle: ${market.title}\nResolution: ${market.resolutionText?.slice(0, 500)}`,
@@ -118,3 +123,4 @@ export class LegexModule extends SignalModule {
 }
 
 export const legexModule = new LegexModule();
+export function createLegexModule(deps: ModuleDeps) { return new LegexModule(deps); }

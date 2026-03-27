@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SignalOutput, clampProbability } from '@apex/shared';
-import { SignalModule, MarketWithData } from './base';
-import { callClaude } from '../services/claude-client';
+import { SignalModule, MarketWithData, ModuleDeps } from './base';
 import { logger } from '../lib/logger';
 
 const REFLEX_PROMPT = fs.readFileSync(
@@ -21,13 +20,18 @@ interface ReflexResult {
 export class ReflexModule extends SignalModule {
   readonly moduleId = 'REFLEX' as const;
 
+  constructor(deps?: ModuleDeps) {
+    super(deps);
+  }
+
   protected async analyze(market: MarketWithData): Promise<SignalOutput | null> {
     const yesContract = market.contracts.find(c => c.outcome === 'YES');
     if (!yesContract?.lastPrice) return null;
     const marketPrice = yesContract.lastPrice;
 
     try {
-      const result = await callClaude<ReflexResult>({
+      if (!this.llmProvider) throw new Error('REFLEX requires llmProvider');
+      const result = await this.llmProvider.call<ReflexResult>({
         task: 'REFLEX_ANALYSIS',
         systemPrompt: REFLEX_PROMPT,
         userMessage: (() => { const { getDateContext, getMarketDateContext } = require('../lib/date-context'); return `${getDateContext()}\n${getMarketDateContext(market.closesAt)}\n\nMarket: ${market.title}\nCategory: ${market.category}\nCurrent YES price: ${(marketPrice * 100).toFixed(1)}%\nDescription: ${(market.description || '').slice(0, 400)}`; })(),
@@ -63,3 +67,7 @@ export class ReflexModule extends SignalModule {
 }
 
 export const reflexModule = new ReflexModule();
+
+export function createReflexModule(deps: ModuleDeps) {
+  return new ReflexModule(deps);
+}

@@ -1,9 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { callClaude } from '../../services/claude-client';
 import { logger } from '../../lib/logger';
 import type { MarketCategory } from '@apex/db';
-import type { LLMTask } from '@apex/shared';
+import type { LLMTask, LLMProvider } from '@apex/shared';
 
 // ── Feature Extraction Result (v2) ──
 // Agents extract structured features, NOT probabilities.
@@ -27,6 +26,8 @@ export interface DomexAgentOptions {
   categories: MarketCategory[];
   /** LLM task tier — defaults to DOMEX_FEATURE_EXTRACT (TIER_1/Haiku) */
   task?: LLMTask;
+  /** Injected LLM provider — if not set, falls back to require('../../services/claude-client') */
+  llmProvider?: LLMProvider;
   /** Optional async function that returns extra context to inject into the user message */
   contextProvider?: (title: string, description: string | null) => Promise<{ context: string; freshness: 'live' | 'cached' | 'stale' | 'none'; sources: string[] }>;
   /**
@@ -67,31 +68,40 @@ export function createDomexAgent(opts: DomexAgentOptions): DomexAgent {
           return null;
         }
 
-        const result = await callClaude<DomexAgentResult>({
-          task: opts.task ?? 'DOMEX_AGENT',
-          systemPrompt,
-          userMessage: (() => {
-            const { getDateContext, getMarketDateContext } = require('../../lib/date-context');
-            // CRITICAL: NO market price shown to agents — prevents anchoring bias.
-            // Agents must estimate features independently from market price.
-            return [
-              `## Date Context`,
-              getDateContext(),
-              getMarketDateContext(closesAt),
-              ``,
-              `## Prediction Market`,
-              `Question: ${title}`,
-              description ? `Description: ${description.slice(0, 500)}` : '',
-              `Category: ${category}`,
-              '',
-              extraContext ? `${extraContext}\n` : '',
-              `Extract the structured features described in your instructions. Do NOT estimate probabilities.`,
-            ].filter(Boolean).join('\n');
-          })(),
-        });
+        const { getDateContext, getMarketDateContext } = require('../../lib/date-context');
+        const userMessage = [
+          `## Date Context`,
+          getDateContext(),
+          getMarketDateContext(closesAt),
+          ``,
+          `## Prediction Market`,
+          `Question: ${title}`,
+          description ? `Description: ${description.slice(0, 500)}` : '',
+          `Category: ${category}`,
+          '',
+          extraContext ? `${extraContext}\n` : '',
+          `Extract the structured features described in your instructions. Do NOT estimate probabilities.`,
+        ].filter(Boolean).join('\n');
 
-        // Attach data source metadata
-        const parsed = result.parsed;
+        // Use injected LLM provider if available, otherwise fall back to direct import
+        let parsed: DomexAgentResult;
+        if (opts.llmProvider) {
+          const result = await opts.llmProvider.call<DomexAgentResult>({
+            task: opts.task ?? 'DOMEX_AGENT',
+            systemPrompt,
+            userMessage,
+          });
+          parsed = result.parsed;
+        } else {
+          // Legacy fallback for agents not yet wired through provider
+          const { callClaude } = require('../../services/claude-client') as { callClaude: <T>(opts: any) => Promise<{ parsed: T }> };
+          const result = await callClaude<DomexAgentResult>({
+            task: opts.task ?? 'DOMEX_AGENT',
+            systemPrompt,
+            userMessage,
+          });
+          parsed = result.parsed;
+        }
         if (!parsed.dataSourcesUsed) parsed.dataSourcesUsed = sources;
         if (!parsed.dataFreshness) parsed.dataFreshness = freshness;
         return parsed;

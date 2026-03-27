@@ -1,7 +1,6 @@
 import { SignalOutput, clampProbability } from '@apex/shared';
-import { syncPrisma as prisma } from '../lib/prisma';
-import { SignalModule, MarketWithData } from './base';
-import { PriceSnapshot, MarketCategory } from '@apex/db';
+import type { PriceSnapshotData, ResolvedMarketData } from '@apex/shared';
+import { SignalModule, MarketWithData, ModuleDeps } from './base';
 
 interface CogexMetadata {
   anchoringScore: number;
@@ -22,6 +21,10 @@ const BIAS_WEIGHTS = { anchoring: 0.25, tailRisk: 0.30, recency: 0.20, favLongsh
 
 export class CogexModule extends SignalModule {
   readonly moduleId = 'COGEX' as const;
+
+  constructor(deps?: ModuleDeps) {
+    super(deps);
+  }
 
   protected async analyze(market: MarketWithData): Promise<SignalOutput | null> {
     const yesContract = market.contracts.find(c => c.outcome === 'YES');
@@ -82,7 +85,7 @@ export class CogexModule extends SignalModule {
   }
 
   // ── Anchoring Bias ──
-  private detectAnchoring(snapshots: PriceSnapshot[], currentPrice: number): number {
+  private detectAnchoring(snapshots: PriceSnapshotData[], currentPrice: number): number {
     if (snapshots.length < 20) return 0;
 
     // Use last 7 days of snapshots
@@ -116,16 +119,11 @@ export class CogexModule extends SignalModule {
   }
 
   // ── Tail Risk Underpricing ──
-  private async detectTailRisk(category: MarketCategory, marketPrice: number): Promise<number> {
+  private async detectTailRisk(category: string, marketPrice: number): Promise<number> {
     if (marketPrice > 0.10 && marketPrice < 0.90) return 0; // only applies to tails
+    if (!this.dataProvider) return 0;
 
-    const resolvedMarkets = await prisma.market.findMany({
-      where: { category, status: 'RESOLVED', resolution: { not: null } },
-      include: {
-        priceSnapshots: { orderBy: { timestamp: 'asc' }, take: 1 },
-      },
-      take: 500,
-    });
+    const resolvedMarkets = await this.dataProvider.getResolvedMarkets(category, 500);
 
     if (resolvedMarkets.length < 30) return 0;
 
@@ -163,7 +161,7 @@ export class CogexModule extends SignalModule {
   }
 
   // ── Recency Bias ──
-  private detectRecencyBias(snapshots: PriceSnapshot[], currentPrice: number): number {
+  private detectRecencyBias(snapshots: PriceSnapshotData[], currentPrice: number): number {
     const now = Date.now();
     const recent7d = snapshots.filter(s => s.timestamp.getTime() > now - 7 * 24 * 3600 * 1000);
     const older90d = snapshots.filter(s => s.timestamp.getTime() > now - 90 * 24 * 3600 * 1000);
@@ -187,12 +185,10 @@ export class CogexModule extends SignalModule {
   }
 
   // ── Favorite-Longshot Bias ──
-  private async detectFavLongshot(category: MarketCategory, marketPrice: number): Promise<number> {
-    const resolvedMarkets = await prisma.market.findMany({
-      where: { category, status: 'RESOLVED', resolution: { not: null } },
-      include: { priceSnapshots: { orderBy: { timestamp: 'asc' }, take: 1 } },
-      take: 500,
-    });
+  private async detectFavLongshot(category: string, marketPrice: number): Promise<number> {
+    if (!this.dataProvider) return 0;
+
+    const resolvedMarkets = await this.dataProvider.getResolvedMarkets(category, 500);
 
     if (resolvedMarkets.length < 50) return 0;
 
@@ -224,15 +220,12 @@ export class CogexModule extends SignalModule {
   }
 
   // ── Helpers ──
-  private async getPriceHistory(marketId: string, days: number): Promise<PriceSnapshot[]> {
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    return prisma.priceSnapshot.findMany({
-      where: { marketId, timestamp: { gte: since } },
-      orderBy: { timestamp: 'asc' },
-    });
+  private async getPriceHistory(marketId: string, days: number): Promise<PriceSnapshotData[]> {
+    if (!this.dataProvider) throw new Error('COGEX requires dataProvider');
+    return this.dataProvider.getPriceSnapshots(marketId, days);
   }
 
-  private computeVolatility(snapshots: PriceSnapshot[]): number {
+  private computeVolatility(snapshots: PriceSnapshotData[]): number {
     if (snapshots.length < 2) return 0;
     const returns: number[] = [];
     for (let i = 1; i < snapshots.length; i++) {
@@ -288,4 +281,10 @@ export class CogexModule extends SignalModule {
   }
 }
 
+// Default singleton — will be replaced by orchestrator with injected providers
 export const cogexModule = new CogexModule();
+
+// Factory for creating with injected providers
+export function createCogexModule(deps: ModuleDeps) {
+  return new CogexModule(deps);
+}

@@ -1,9 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SignalOutput, clampProbability } from '@apex/shared';
-import { SignalModule, MarketWithData } from './base';
-import { callClaude } from '../services/claude-client';
-import { syncPrisma as prisma } from '../lib/prisma';
+import { SignalModule, MarketWithData, ModuleDeps } from './base';
 import { logger } from '../lib/logger';
 
 const ALTEX_PROMPT = fs.readFileSync(
@@ -47,6 +45,10 @@ interface AltexAnalysisResult {
 export class AltexModule extends SignalModule {
   readonly moduleId = 'ALTEX' as const;
 
+  constructor(deps?: ModuleDeps) {
+    super(deps);
+  }
+
   /** Single-market analysis — asks Claude about recent news impact on this market */
   protected async analyze(market: MarketWithData): Promise<SignalOutput | null> {
     const yesContract = market.contracts.find(c => c.outcome === 'YES');
@@ -57,7 +59,8 @@ export class AltexModule extends SignalModule {
     if (!market.description && !market.title) return null;
 
     try {
-      const result = await callClaude<{
+      if (!this.llmProvider) throw new Error('ALTEX requires llmProvider');
+      const result = await this.llmProvider.call<{
         hasRecentNews: boolean;
         probabilityShift: number;
         direction: 'TOWARD_YES' | 'TOWARD_NO';
@@ -110,7 +113,7 @@ export class AltexModule extends SignalModule {
 
     // TIER_2: Deep analysis of relevant articles against markets
     try {
-      const result = await callClaude<AltexAnalysisResult>({
+      const result = await this.llmProvider!.call<AltexAnalysisResult>({
         task: 'ALTEX_ANALYSIS',
         systemPrompt: ALTEX_PROMPT,
         userMessage: this.buildAnalysisPrompt(relevantArticles, markets),
@@ -137,7 +140,7 @@ export class AltexModule extends SignalModule {
         `- ${m.title} (id: ${m.id})`
       ).join('\n');
 
-      const result = await callClaude<AltexScreenResult>({
+      const result = await this.llmProvider!.call<AltexScreenResult>({
         task: 'SCREEN_NEWS',
         systemPrompt: 'You filter news articles for prediction market relevance. Respond with JSON: {"isRelevant": boolean, "relevantMarketIds": ["string"]}',
         userMessage: `Which of these articles could affect these prediction markets?\n\nArticles:\n${articleSummaries}\n\nMarkets:\n${marketSummaries}`,
@@ -202,3 +205,4 @@ export class AltexModule extends SignalModule {
 }
 
 export const altexModule = new AltexModule();
+export function createAltexModule(deps: ModuleDeps) { return new AltexModule(deps); }
