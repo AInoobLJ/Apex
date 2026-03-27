@@ -3121,3 +3121,24 @@ The `buildActionabilitySummary()` now reports confidence failures explicitly (e.
 - Doncic NBA MVP (FUTURES): ✅ null — blocked correctly
 - Celtics vs Hawks (MATCH): ✅ Fuku passthrough, spread +9.3, dataSource=fuku
 - Tiger Woods Masters (FUTURES): ✅ null — blocked correctly
+
+### V2.26 Clean Baseline Reset — Clear Pre-Fix Data (2026-03-27 PM)
+
+**Problem:** The existing 14 paper positions, 1,328 edges, and 18,074 signals were generated before three critical fixes (Odds API key, Fuku integration, MATCH vs FUTURES detection). Data was contaminated with hallucinated SPORTS-EDGE signals and match-odds-to-futures confusion. 10 of 14 paper positions were on FUTURES markets that should never have had SPORTS-EDGE-sourced signals.
+
+**Action:** Full data reset (archived counts first):
+- Deleted: 14 paper positions, 1,328 edges, 18,074 signals, 257 alerts, 939,004 price snapshots
+- Preserved: 18,603 markets, 37,206 contracts, all SystemConfig, all FeatureModel state
+- Reset daily LLM budget counter to $0.00
+
+**Post-reset state:**
+- Dashboard Edges: 0 edges (clean)
+- Dashboard Portfolio: $10,000 total, $0 deployed, 0 positions (clean)
+- Dashboard Markets: 18,603 markets (preserved)
+- Worker restarted, RESEARCH pipeline rebuilding signals from clean baseline with Fuku + futures detection
+
+**Fresh signals will have:**
+- `sportsDataSource` tag: `fuku`, `oddsapi-h2h`, `futures-blocked`, `no-data`
+- `sportsMarketType` tag: `MATCH` or `FUTURES`
+- FUTURES markets blocked (no match-odds-to-futures confusion)
+- Fuku data passthrough for CBB/NBA/NHL/Soccer matches (zero LLM cost)

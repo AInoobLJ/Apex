@@ -705,6 +705,14 @@
 - [x] [NEW] `sportsDataSource` and `sportsMarketType` tags in signal features — enables filtering bad signals from FeatureModel training data.
 - [x] [VERIFY] Tests: Napoli Serie A→null ✅, Liverpool CL→null ✅, Doncic MVP→null ✅, Celtics vs Hawks→Fuku passthrough ✅, Tiger Woods Masters→null ✅.
 
+### Clean Baseline Reset (2026-03-27 PM)
+
+- [x] [FIX] Archived and cleared all pre-fix data: 14 paper positions (10 were FUTURES contaminated), 1,328 edges, 18,074 signals, 257 alerts, 939K price snapshots.
+- [x] [FIX] Preserved: 18,603 markets, 37,206 contracts, SystemConfig, FeatureModel state.
+- [x] [FIX] Reset daily LLM budget counter. Worker restarted from clean baseline.
+- [x] [VERIFY] Dashboard verified: Edges 0, Portfolio $10K/$0 deployed/0 positions, Markets 18,603, System HEALTHY.
+- [x] [VERIFY] Fresh research cycle producing signals with SPEEDEX (20) and FLOWEX (7) first. LLM modules (COGEX/DOMEX/LEGEX/ALTEX/REFLEX) rebuilding on 15-min cycle.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)
