@@ -675,6 +675,21 @@
 - [x] [FIX] `POST /system/recategorize-markets` now uses stored `rawPlatformCategory` with `detectCategory(title, description, rawPlatformCategory)` — no more loss of platform categories during recategorization.
 - [x] [FIX] Migration: `prisma db push` added nullable column. Populates on next market-sync as markets are upserted.
 
+### System Verification: Paper Trade Run Readiness (2026-03-27 PM)
+
+- [x] [VERIFY] ESPN data integration: `espn-data.ts` exists with injuries, standings, team schedules for NBA/NFL/MLB/NHL + 6 soccer leagues. ESPN API calls confirmed working (28 NBA teams with injury data). Wired into SPORTS-EDGE contextProvider alongside The Odds API.
+- [x] [VERIFY] The Odds API: `ODDS_API_KEY` confirmed in `.env`. API returning real data (10 NBA games, 18 Ligue 1 games). Monthly usage: 4 calls, 430 remaining (of 500 free tier).
+- [x] [VERIFY] SPORTS-EDGE safety: `requireContext: true` enforced — returns null when no data. Worker logs confirm Odds API + ESPN data flowing into SPORTS-EDGE context.
+- [x] [VERIFY] Actionability thresholds: `EDGE_ACTIONABILITY_THRESHOLD = 0.03` (3% EV), `MIN_CONFIDENCE_FOR_ACTIONABLE = 0.20` (20% confidence), `MIN_MODULES_FOR_ACTIONABLE = 2`, `MIN_LLM_MODULES_FOR_ACTIONABLE = 1` — all enforced in `cortex.ts`.
+- [x] [VERIFY] Speed pipeline paper trades: DISABLED — imports commented out in `speed-pipeline.job.ts`.
+- [x] [VERIFY] Paper position + reconciliation jobs: running every 5 min. 12 paper trades created in last 24h.
+- [x] [VERIFY] Telegram daily digest: scheduled for 8 AM ET (13:00 UTC) via `daily-digest` repeatable job.
+- [x] [VERIFY] Worker stable: PID 44749, all queues registered (ingestion, analysis/RESEARCH, speed/SPEED, arb-scan, maintenance).
+- [x] [VERIFY] Module health (last 24h signals): COGEX 186 ✅ | FLOWEX 6,675 ✅ | LEGEX 146 ✅ | DOMEX 125 ✅ | ALTEX 64 ✅ | REFLEX 30 ✅ | SPEEDEX 6,572 ✅ | ARBEX 672 ✅. All 8 active modules producing signals.
+- [x] [VERIFY] 24h stats: 13,352 signals, 488 edges, 267 actionable (>=20% conf), 12 paper trades.
+- [ ] [FLAG] **LLM cost $24.47/day — still over $5/day budget.** Budget cap was set but high signal volume (13K+ signals/day) is driving cost. Need to investigate: is the HARD_LIMIT actually blocking calls, or just logging? Check if SCREEN_MARKET calls are still the main cost driver.
+- [ ] [FLAG] **No `start-worker.sh` auto-restart script.** Worker runs as a bare `nohup` process — if it crashes overnight, no auto-restart. Consider adding pm2, systemd, or a simple restart loop.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)

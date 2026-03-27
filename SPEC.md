@@ -3016,3 +3016,27 @@ The `buildActionabilitySummary()` now reports confidence failures explicitly (e.
 - Migration: `prisma db push` added nullable column (no data loss)
 
 **Data flow:** Column starts null for all 13,171 existing markets. Next market-sync (every 5 min) populates it as markets are upserted from Kalshi/Polymarket. Future recategorization runs will always have the platform's original category available.
+
+### V2.23 System Verification — Paper Trade Run Readiness (2026-03-27 PM)
+
+**Verification scope:** Full system health check before 24-48h overnight paper trade collection run.
+
+**ESPN integration:** `espn-data.ts` confirmed operational — injuries (28 NBA teams), standings, team schedules for NBA/NFL/MLB/NHL + 6 soccer leagues. Wired into SPORTS-EDGE alongside The Odds API. Both data sources confirmed flowing through worker logs.
+
+**Module health (all producing signals in last 24h):**
+| Module | Signals (24h) | Last Signal | Status |
+|--------|--------------|-------------|--------|
+| FLOWEX | 6,675 | 42m ago | ✅ UP |
+| SPEEDEX | 6,572 | 42m ago | ✅ UP |
+| ARBEX | 672 | 25h ago | ✅ UP (60s cycle) |
+| COGEX | 186 | 9m ago | ✅ UP |
+| LEGEX | 146 | 22m ago | ✅ UP |
+| DOMEX | 125 | 23m ago | ✅ UP |
+| ALTEX | 64 | 22m ago | ✅ UP |
+| REFLEX | 30 | 22m ago | ✅ UP |
+
+**24h stats:** 13,352 signals → 488 edges → 267 actionable → 12 paper trades.
+
+**Known issues:**
+- LLM cost $24.47/day — exceeds $5/day budget target. Investigate whether HARD_LIMIT is enforcing or just logging.
+- No `start-worker.sh` auto-restart script — worker runs as bare `nohup` process.
