@@ -115,8 +115,12 @@ interface ModelWeights {
   weights: Record<string, number>;
   trainedAt: Date;
   sampleSize: number;
-  accuracy: number;
+  accuracy: number;           // in-sample (training) accuracy
+  validationAccuracy: number; // out-of-sample accuracy (the one that matters)
 }
+
+/** Current feature schema version. Increment when feature schemas change. */
+export const FEATURE_SCHEMA_VERSION = 2; // v2: Fuku integration, futures detection
 
 // Default weights — replaced by trained model when enough resolved markets accumulate
 // CRITICAL: priceLevel is ZERO — market price must NOT influence the probability model.
@@ -184,6 +188,7 @@ const DEFAULT_WEIGHTS: ModelWeights = {
   trainedAt: new Date(),
   sampleSize: 0,
   accuracy: 0.5,
+  validationAccuracy: 0.5,
 };
 
 let currentModel: ModelWeights = DEFAULT_WEIGHTS;
@@ -280,10 +285,14 @@ export function predict(fv: FeatureVector): { probability: number; confidence: n
 
   const probability = Math.max(0.01, Math.min(0.99, sigmoid(logit)));
 
-  // Confidence based on: feature coverage, model accuracy, sample size
+  // Confidence based on: feature coverage, validation accuracy (NOT training accuracy), sample size
   const featureCount = Object.keys(flat).length;
   const coverageFactor = Math.min(1, featureCount / 10);
-  const modelFactor = model.sampleSize > 50 ? model.accuracy : 0.5;
+  // Use validation accuracy (out-of-sample) — training accuracy is meaningless for confidence.
+  // Only trust the model if validation accuracy > 55% AND enough samples.
+  const modelFactor = model.sampleSize > 50 && model.validationAccuracy > 0.55
+    ? model.validationAccuracy
+    : 0.5; // fall back to prior — insufficient data or model doesn't beat coin flip
   const confidence = Math.min(0.9, coverageFactor * modelFactor);
 
   importance.sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution));
@@ -291,28 +300,90 @@ export function predict(fv: FeatureVector): { probability: number; confidence: n
   return { probability, confidence, featureImportance: importance.slice(0, 5) };
 }
 
+/** Minimum resolved markets needed to train. Below this, we keep defaults. */
+const MIN_TRAINING_SAMPLES = 30;
+
+/** L2 regularization strength. Prevents overfitting with sparse features. */
+const L2_LAMBDA = 0.1;
+
+/** Validation split ratio */
+const VALIDATION_SPLIT = 0.2;
+
+/** Minimum validation accuracy to adopt the trained model */
+const MIN_VALIDATION_ACCURACY = 0.55;
+
 /**
- * Train model on resolved markets using gradient descent.
+ * Shuffle array in-place (Fisher-Yates) with deterministic seed for reproducibility.
+ */
+function shuffleArray<T>(arr: T[], seed = 42): T[] {
+  const shuffled = [...arr];
+  let s = seed;
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    s = (s * 1664525 + 1013904223) & 0x7fffffff; // LCG
+    const j = s % (i + 1);
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+/**
+ * Calculate accuracy on a dataset given weights.
+ */
+function calcAccuracy(
+  data: { features: Record<string, number>; outcome: 0 | 1 }[],
+  weights: Record<string, number>,
+  intercept: number
+): number {
+  if (data.length === 0) return 0.5;
+  let correct = 0;
+  for (const { features, outcome } of data) {
+    let logit = intercept;
+    for (const [f, w] of Object.entries(weights)) {
+      if (features[f] !== undefined) logit += w * features[f];
+    }
+    const pred = sigmoid(logit) >= 0.5 ? 1 : 0;
+    if (pred === outcome) correct++;
+  }
+  return correct / data.length;
+}
+
+/**
+ * Train model on resolved markets using gradient descent with L2 regularization
+ * and train/validation split.
+ *
  * Called weekly by the calibration job.
+ *
+ * Key safeguards:
+ * - Minimum 30 samples required (below this, not enough data to learn)
+ * - 80/20 train/validation split (reports validation accuracy, not training)
+ * - L2 regularization (lambda=0.1) prevents overfitting with 40+ features
+ * - If validation accuracy < 55%, model is rejected (keeps current weights)
+ * - modelFactor uses validation accuracy, not training accuracy
  */
 export function trainModel(
   trainingData: { features: FeatureVector; outcome: 0 | 1 }[],
   learningRate = 0.01,
   epochs = 100
 ): ModelWeights {
-  if (trainingData.length < 20) {
-    // Not enough data — keep defaults
+  if (trainingData.length < MIN_TRAINING_SAMPLES) {
+    // Not enough data — keep defaults. With <30 samples and 40+ features,
+    // any trained model would be severely overfit.
     return currentModel;
   }
 
-  const flatData = trainingData.map(d => ({
+  const flatData = shuffleArray(trainingData.map(d => ({
     features: flattenFeatures(d.features),
     outcome: d.outcome,
-  }));
+  })));
 
-  // Collect all feature names
+  // ── Train/validation split (80/20) ──
+  const splitIdx = Math.floor(flatData.length * (1 - VALIDATION_SPLIT));
+  const trainSet = flatData.slice(0, splitIdx);
+  const valSet = flatData.slice(splitIdx);
+
+  // Collect all feature names from training set only
   const allFeatures = new Set<string>();
-  for (const d of flatData) {
+  for (const d of trainSet) {
     for (const k of Object.keys(d.features)) allFeatures.add(k);
   }
 
@@ -320,13 +391,14 @@ export function trainModel(
   const weights: Record<string, number> = { ...currentModel.weights };
   let intercept = currentModel.intercept;
 
-  // Gradient descent
+  // ── Gradient descent with L2 regularization ──
+  const n = trainSet.length;
   for (let epoch = 0; epoch < epochs; epoch++) {
     let interceptGrad = 0;
     const grads: Record<string, number> = {};
     for (const f of allFeatures) grads[f] = 0;
 
-    for (const { features, outcome } of flatData) {
+    for (const { features, outcome } of trainSet) {
       let logit = intercept;
       for (const [f, w] of Object.entries(weights)) {
         if (features[f] !== undefined) logit += w * features[f];
@@ -342,30 +414,37 @@ export function trainModel(
       }
     }
 
-    const n = flatData.length;
+    // Update with L2 regularization: gradient += lambda * weight
+    // (don't regularize the intercept)
     intercept -= learningRate * (interceptGrad / n);
     for (const f of allFeatures) {
-      weights[f] = (weights[f] || 0) - learningRate * (grads[f] / n);
+      const grad = grads[f] / n + L2_LAMBDA * (weights[f] || 0); // L2 penalty
+      weights[f] = (weights[f] || 0) - learningRate * grad;
     }
   }
 
-  // Calculate accuracy
-  let correct = 0;
-  for (const { features, outcome } of flatData) {
-    let logit = intercept;
-    for (const [f, w] of Object.entries(weights)) {
-      if (features[f] !== undefined) logit += w * features[f];
-    }
-    const pred = sigmoid(logit) >= 0.5 ? 1 : 0;
-    if (pred === outcome) correct++;
+  // ── Evaluate on BOTH sets ──
+  const trainAccuracy = calcAccuracy(trainSet, weights, intercept);
+  const valAccuracy = calcAccuracy(valSet, weights, intercept);
+
+  // ── Reject model if validation accuracy is too low ──
+  if (valAccuracy < MIN_VALIDATION_ACCURACY) {
+    // Model doesn't beat coin flip on unseen data — keep current weights.
+    // This can happen early when training data is sparse or noisy.
+    return {
+      ...currentModel,
+      accuracy: trainAccuracy,
+      validationAccuracy: valAccuracy,
+    };
   }
 
   const newModel: ModelWeights = {
     intercept,
     weights,
     trainedAt: new Date(),
-    sampleSize: flatData.length,
-    accuracy: correct / flatData.length,
+    sampleSize: trainSet.length,
+    accuracy: trainAccuracy,
+    validationAccuracy: valAccuracy,
   };
 
   currentModel = newModel;
@@ -376,37 +455,40 @@ export function trainModel(
  * Load model weights from persisted JSON (DB or file).
  * Called on worker startup to restore trained model.
  */
-export function loadModel(serialized: { intercept: number; weights: Record<string, number>; trainedAt: string; sampleSize: number; accuracy: number }): void {
+export function loadModel(serialized: { intercept: number; weights: Record<string, number>; trainedAt: string; sampleSize: number; accuracy: number; validationAccuracy?: number }): void {
   currentModel = {
     intercept: serialized.intercept,
     weights: serialized.weights,
     trainedAt: new Date(serialized.trainedAt),
     sampleSize: serialized.sampleSize,
     accuracy: serialized.accuracy,
+    validationAccuracy: serialized.validationAccuracy ?? serialized.accuracy, // backward compat
   };
 }
 
 /**
  * Serialize current model for persistence.
  */
-export function serializeModel(): { intercept: number; weights: Record<string, number>; trainedAt: string; sampleSize: number; accuracy: number } {
+export function serializeModel(): { intercept: number; weights: Record<string, number>; trainedAt: string; sampleSize: number; accuracy: number; validationAccuracy: number } {
   return {
     intercept: currentModel.intercept,
     weights: currentModel.weights,
     trainedAt: currentModel.trainedAt.toISOString(),
     sampleSize: currentModel.sampleSize,
     accuracy: currentModel.accuracy,
+    validationAccuracy: currentModel.validationAccuracy,
   };
 }
 
 /**
  * Get current model info for dashboard.
  */
-export function getModelInfo(): { trainedAt: Date; sampleSize: number; accuracy: number; featureCount: number } {
+export function getModelInfo(): { trainedAt: Date; sampleSize: number; accuracy: number; validationAccuracy: number; featureCount: number } {
   return {
     trainedAt: currentModel.trainedAt,
     sampleSize: currentModel.sampleSize,
     accuracy: currentModel.accuracy,
+    validationAccuracy: currentModel.validationAccuracy,
     featureCount: Object.keys(currentModel.weights).length,
   };
 }

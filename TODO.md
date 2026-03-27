@@ -742,6 +742,15 @@
 - [x] [FIX] Fixed Kalshi fee formula: was `0.07 × price × (1-price)`, now `0.07 × (1 - entryPrice)` per contract (7% of profit).
 - [x] [VERIFY] All manual tests pass: BUY_YES/BUY_NO symmetric Kelly, no-edge → 0%, fee deduction correct.
 
+### FeatureModel: Train/Val Split, L2 Regularization, Timestamp Fix, Schema Versioning (2026-03-27 PM)
+
+- [x] [CRITICAL] Added 80/20 train/validation split. Model now reports validation accuracy (out-of-sample). Confidence uses validation accuracy, not training accuracy. Model rejected if validation accuracy < 55%.
+- [x] [CRITICAL] Added L2 regularization (λ=0.1) to prevent overfitting with 40+ features and sparse data.
+- [x] [HIGH] Fixed daysToResolution: now computed from signal.createdAt (not market.createdAt), matching inference-time feature values.
+- [x] [HIGH] Added FEATURE_SCHEMA_VERSION=2. DOMEX signals stamped with version. Learning loop filters by version to prevent feature mismatch.
+- [x] [FIX] Minimum training samples raised from 20 to 30.
+- [x] [VERIFY] Tests pass: insufficient samples → defaults, random data → model rejected, schema version exported.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)

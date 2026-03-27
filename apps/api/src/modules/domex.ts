@@ -9,7 +9,7 @@ import { sportsEdgeAgent } from './domex-agents/sports-edge';
 import { weatherHawkAgent } from './domex-agents/weather-hawk';
 import { legalEagleAgent } from './domex-agents/legal-eagle';
 import { corporateIntelAgent } from './domex-agents/corporate-intel';
-import { predict } from '@apex/cortex';
+import { predict, FEATURE_SCHEMA_VERSION } from '@apex/cortex';
 import type { FeatureVector, FedHawkFeatures, GeoIntelFeatures, SportsEdgeFeatures, CryptoAlphaFeatures, WeatherHawkFeatures, LegalEagleFeatures, CorporateIntelFeatures } from '@apex/cortex';
 import type { MarketCategory } from '@apex/db';
 
@@ -93,6 +93,7 @@ export class DomexModule extends SignalModule {
       reasoning,
       {
         agentCount: validResults.length,
+        featureSchemaVersion: FEATURE_SCHEMA_VERSION,
         featureVector: this.serializeFeatureVector(featureVector),
         featureImportance: prediction.featureImportance,
         agents: validResults.map(({ agent, result }) => ({

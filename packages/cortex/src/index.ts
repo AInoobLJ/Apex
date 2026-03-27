@@ -34,7 +34,7 @@ export {
 export type { CategoryBudget, AllocationDecision, PortfolioState } from './portfolio-allocator';
 
 // ── FeatureModel ──
-export { predict, trainModel, loadModel, serializeModel, getModelInfo } from './feature-model';
+export { predict, trainModel, loadModel, serializeModel, getModelInfo, FEATURE_SCHEMA_VERSION } from './feature-model';
 export type {
   FeatureVector, FedHawkFeatures, GeoIntelFeatures, SportsEdgeFeatures,
   CryptoAlphaFeatures, LegexFeatures, AltexFeatures,

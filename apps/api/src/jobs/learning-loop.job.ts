@@ -1,7 +1,7 @@
 import { Job } from 'bullmq';
 import { syncPrisma as prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
-import { trainModel, serializeModel, getModelInfo, recalibrate } from '@apex/cortex';
+import { trainModel, serializeModel, getModelInfo, recalibrate, FEATURE_SCHEMA_VERSION } from '@apex/cortex';
 import type { FeatureVector } from '@apex/cortex';
 import { telegramService } from '../services/telegram';
 
@@ -50,12 +50,29 @@ export async function handleLearningLoop(job: Job): Promise<void> {
     const yesPrice = market.contracts[0]?.lastPrice;
     if (!yesPrice) continue;
 
+    // Find the DOMEX signal for this market (has the richest feature vector)
+    // Filter by schema version to prevent feature mismatch from old schemas
+    const domexSignal = market.signals.find(s => {
+      if (s.moduleId !== 'DOMEX') return false;
+      try {
+        const meta = typeof s.metadata === 'string' ? JSON.parse(s.metadata) : s.metadata;
+        // Only use signals with current schema version (or no version = legacy, skip)
+        return meta?.featureSchemaVersion === FEATURE_SCHEMA_VERSION;
+      } catch { return false; }
+    });
+
+    // If no DOMEX signal with current schema version, use basic features only
+    // (don't mix old schema features into new model)
+
+    // FIX: daysToResolution from SIGNAL creation time (not market.createdAt).
+    // At training time we need the same feature value as at inference time —
+    // i.e., "how many days until resolution WHEN the signal was first generated."
+    const signalTimestamp = domexSignal?.createdAt ?? market.createdAt;
     const daysToRes = market.closesAt
-      ? Math.max(1, Math.ceil((market.closesAt.getTime() - market.createdAt.getTime()) / 86400000))
+      ? Math.max(1, Math.ceil((market.closesAt.getTime() - signalTimestamp.getTime()) / 86400000))
       : 365;
 
-    // Build a basic feature vector from market data
-    // In production, we'd reconstruct the full feature vector from stored signal metadata
+    // Build feature vector
     const fv: FeatureVector = {
       marketId: market.id,
       marketPrice: yesPrice,
@@ -68,12 +85,11 @@ export async function handleLearningLoop(job: Job): Promise<void> {
       timeToResolutionBucket: daysToRes < 1 ? 0 : daysToRes < 7 ? 1 : daysToRes < 30 ? 2 : 3,
     };
 
-    // Reconstruct domain features from stored signal metadata where possible
-    for (const signal of market.signals) {
+    // Reconstruct domain features from stored signal metadata (schema-versioned)
+    if (domexSignal) {
       try {
-        const meta = typeof signal.metadata === 'string' ? JSON.parse(signal.metadata) : signal.metadata;
+        const meta = typeof domexSignal.metadata === 'string' ? JSON.parse(domexSignal.metadata) : domexSignal.metadata;
         if (meta?.featureVector) {
-          // If the signal stored its feature vector, use it directly
           Object.assign(fv, meta.featureVector);
         }
       } catch {
@@ -115,11 +131,13 @@ export async function handleLearningLoop(job: Job): Promise<void> {
 
   for (const market of resolvedMarkets) {
     const outcome: 0 | 1 = market.resolution === 'YES' ? 1 : 0;
-    const daysToRes = market.closesAt
-      ? Math.max(0.01, (market.closesAt.getTime() - market.createdAt.getTime()) / 86400000)
-      : 365;
 
     for (const signal of market.signals) {
+      // FIX: daysToResolution from signal's createdAt (matches inference time)
+      const daysToRes = market.closesAt
+        ? Math.max(0.01, (market.closesAt.getTime() - signal.createdAt.getTime()) / 86400000)
+        : 365;
+
       calibrationData.push({
         moduleId: signal.moduleId,
         category: market.category,
@@ -148,8 +166,8 @@ export async function handleLearningLoop(job: Job): Promise<void> {
   }, 'Learning loop complete');
 
   // Step 7: Send Telegram summary
-  const oldAcc = (oldModelInfo.accuracy * 100).toFixed(1);
-  const newAcc = (newModel.accuracy * 100).toFixed(1);
+  const oldAcc = (oldModelInfo.validationAccuracy * 100).toFixed(1);
+  const newAcc = ((newModel as any).validationAccuracy !== undefined ? ((newModel as any).validationAccuracy * 100).toFixed(1) : (newModel.accuracy * 100).toFixed(1));
   // Compute average Brier score from calibration records
   const avgBrier = calibrationRecords.length > 0
     ? calibrationRecords.reduce((s, r) => s + r.brierScore, 0) / calibrationRecords.length

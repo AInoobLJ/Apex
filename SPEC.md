@@ -3264,3 +3264,39 @@ BUY_YES and BUY_NO with symmetric 10% edges now produce identical Kelly fraction
 - Symmetry check: both 3.6% ✅
 - No-edge (p=market=0.50): Kelly 0% ✅
 - Fee deduction: 10% edge at 0.30 → 5.1% net edge after 4.9% Kalshi fee ✅
+
+### V2.32 FeatureModel: Train/Val Split, L2 Regularization, Timestamp Fix, Schema Versioning (2026-03-27 PM)
+
+**4 bugs found and fixed in the learning pipeline:**
+
+**Bug 1 — No train/validation split (overfitting guarantee):**
+Model trained on ALL data and reported in-sample accuracy as the quality metric. `modelFactor = model.accuracy` directly scaled confidence, so an overfit model produced artificially high confidence. Fixed: 80/20 train/validation split. Reports `validationAccuracy`. Confidence uses validation accuracy, not training accuracy. Model rejected if validation accuracy < 55%.
+
+**Bug 2 — No regularization (40+ features, sparse data):**
+With 40+ features and potentially few resolved markets, logistic regression will overfit without regularization. Fixed: L2 (ridge) regularization with λ=0.1. Prevents any single feature weight from dominating.
+
+**Bug 3 — daysToResolution from wrong timestamp:**
+Computed from `market.createdAt` instead of `signal.createdAt`. At training time this produces a different value than at inference time, creating systematic feature mismatch. Fixed: now uses signal's `createdAt` in both the FeatureModel training data and calibration data.
+
+**Bug 4 — No feature schema versioning:**
+`Object.assign(fv, meta.featureVector)` merged old schema features with no versioning. As agents change schemas (Fuku integration, futures detection), old training data has mismatched features. Fixed: `FEATURE_SCHEMA_VERSION = 2` stamped on every DOMEX signal. Learning loop filters to only use current-version signals for training.
+
+**Files changed:**
+- `packages/cortex/src/feature-model.ts`: train/val split, L2 regularization, min 30 samples, validation accuracy, schema version export
+- `packages/cortex/src/index.ts`: export `FEATURE_SCHEMA_VERSION`
+- `apps/api/src/jobs/learning-loop.job.ts`: signal timestamp for daysToResolution, schema version filtering
+- `apps/api/src/modules/domex.ts`: stamp `featureSchemaVersion` on signal metadata
+
+**Safeguards added:**
+| Safeguard | Threshold | Effect |
+|-----------|-----------|--------|
+| Minimum samples | 30 | Below this, model keeps default weights (no training) |
+| Train/val split | 80/20 | Reports out-of-sample accuracy |
+| Validation accuracy | ≥ 55% | Below this, trained model is rejected |
+| L2 regularization | λ=0.1 | Prevents overfitting with sparse features |
+| Schema versioning | v2 | Old signals excluded from training |
+
+**Test results:**
+- 25 samples < 30 min → model unchanged ✅
+- 50 random samples → training 60%, validation 50% → model rejected (< 55%) ✅
+- FEATURE_SCHEMA_VERSION = 2 ✅
