@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "api",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--workspace=@apex/api"],
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": ["-c", "cd /Users/lukejurat/Desktop/Apex && export PATH=/opt/homebrew/bin:$PATH && npm run dev --workspace=@apex/api"],
       "port": 3001
     },
     {

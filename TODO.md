@@ -765,6 +765,12 @@
 - [x] [CRITICAL] Added preflight gates to `executeArb()`: checks circuit breakers for BOTH platforms + runs full 7-gate preflight before placing any orders. Previously bypassed ALL safety gates.
 - [x] [HIGH] Fixed budget tracker race condition: added promise-based mutex on `recordLLMSpend`. Prevents concurrent LLM calls from exceeding the $5/day hard limit via read-modify-write race.
 
+### Test Suite — 57 Tests for Cortex Math + Tradex Safety (2026-03-27 PM)
+
+- [x] [CRITICAL] Added vitest with 57 tests: 42 cortex (signal fusion, Kelly, fees, feature model, calibration, input validation) + 15 tradex (7 preflight gates, circuit breaker, arb safety).
+- [x] [NEW] Test infrastructure: vitest in monorepo, `npm test` from root, all tests in 1.7s, zero external deps.
+- [x] [VERIFY] All 57 tests pass. Kelly BUY_YES/BUY_NO symmetric ✅, NaN exclusion ✅, all 7 preflight gates ✅, circuit breaker open/close ✅, arb preflight ✅.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)

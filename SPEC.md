@@ -3367,3 +3367,30 @@ Concurrent LLM calls did read-modify-write on the DB budget counter, allowing th
 - `apps/api/src/services/data-sources/odds-api.ts`: Odds API calls through `oddsApiBreaker`
 - `packages/tradex/src/manager.ts`: `executeArb()` now runs preflight + circuit breaker checks
 - `apps/api/src/services/llm-budget-tracker.ts`: Mutex on `recordLLMSpend`
+
+### V2.35 Test Suite — 57 Tests for Cortex Math + Tradex Safety (2026-03-27 PM)
+
+**Problem:** Zero test coverage across entire codebase. Every `package.json` had `"test": "echo \"no tests yet\""`. Kelly formula, fee calculations, signal fusion, calibration — none ever tested.
+
+**Solution:** Added vitest with 57 tests covering all critical math and safety logic.
+
+**Test infrastructure:**
+- Vitest installed as monorepo dev dependency
+- `npm test` runs via `turbo test` from root
+- All tests run in 1.7s total (no DB, no API, no external deps)
+
+**Cortex tests (42 tests across 4 files):**
+
+| File | Tests | Covers |
+|------|-------|--------|
+| `signal-fusion.test.ts` | 10 | Single signal, agreeing/conflicting signals, NaN exclusion, zero confidence, output bounds |
+| `opportunity-scoring.test.ts` | 13 | Kelly BUY_YES, Kelly BUY_NO (NO odds), symmetry, no-edge, negative edge, quarter-Kelly, fee calc at 0.30/0.90, fee-surviving edge, NaN/invalid input validation |
+| `feature-model.test.ts` | 11 | Default model output bounds, NaN/Infinity features, NaN intercept rejection, NaN weight cleanup, validation accuracy, min samples, schema version |
+| `calibration-memory.test.ts` | 8 | No calibration → passthrough, output bounds, NaN probability, recalibration adjustment, corrupt record skipping |
+
+**Tradex tests (15 tests across 2 files):**
+
+| File | Tests | Covers |
+|------|-------|--------|
+| `preflight.test.ts` | 10 | All 7 gates independently (RISK_GATE, BALANCE_CHECK × 2, EDGE_VALID × 2, FEE_CHECK, GRADUATION_CHECK, DAILY_LIMIT, POSITION_COUNT), all gates pass |
+| `manager.test.ts` | 5 | Circuit breaker opens after failures, open circuit fails fast, arb checks both platforms, arb preflight failure aborts all legs |

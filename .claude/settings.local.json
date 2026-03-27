@@ -36,7 +36,18 @@
       "Bash(curl -s --max-time 5 -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/system/health\")",
       "Bash(curl -v --max-time 5 \"http://localhost:3001/api/v1/system/health\")",
       "Bash(curl -s --max-time 5 -H \"X-API-Key: your-secret-api-key-here\" \"http://localhost:3001/api/v1/markets?limit=1\")",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(lsof -ti:5173)",
+      "Bash(xargs kill:*)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(git status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(export PATH=\"/opt/homebrew/bin:$PATH\")",
+      "Bash(grep -E \"\\\\.\\(ts|js\\)$\")",
+      "Bash(/usr/local/bin/docker compose:*)",
+      "Bash(npx -y dotenv-cli -e /Users/lukejurat/Desktop/Apex/.env -- bash -c 'psql \"\"$DATABASE_URL\"\" -c \"\"SELECT COUNT\\(*\\) as total, SUM\\(CASE WHEN \\\\\"\"isOpen\\\\\"\" THEN 1 ELSE 0 END\\) as open, SUM\\(CASE WHEN NOT \\\\\"\"isOpen\\\\\"\" THEN 1 ELSE 0 END\\) as closed FROM \\\\\"\"PaperPosition\\\\\"\";\"\"')"
     ]
   }
 }
