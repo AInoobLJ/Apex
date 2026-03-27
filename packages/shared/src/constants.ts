@@ -6,6 +6,7 @@ export { MODULE_IDS, MODULE_HALF_LIVES, DEFAULT_WEIGHTS } from './types';
 // Paper trading at 0.5% produced misleading positive results. Minimum 3% for actionability.
 export const EDGE_ACTIONABILITY_THRESHOLD = 0.03; // 3% EV minimum — covers Kalshi round-trip fees
 export const EDGE_HIGH_THRESHOLD = 0.05;           // 5% EV — strong signal
+export const MIN_CONFIDENCE_FOR_ACTIONABLE = 0.20; // 20% confidence floor — below this is noise
 
 // ── Market Categories ──
 export const MARKET_CATEGORIES = ['POLITICS', 'FINANCE', 'CRYPTO', 'SCIENCE', 'SPORTS', 'CULTURE', 'OTHER'] as const;

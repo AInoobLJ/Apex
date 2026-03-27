@@ -1153,7 +1153,7 @@ ANTHROPIC_API_KEY=
 NEWSAPI_KEY=
 BANKROLL=10000                     # total deployable capital
 KELLY_MULTIPLIER=0.25              # fraction of Kelly to use
-LLM_DAILY_BUDGET=10.00             # daily Claude API budget in USD
+LLM_DAILY_BUDGET=5.00              # daily Claude API budget in USD (hard cap)
 ```
 
 ### 2.11 Testing Requirements (Phase 2)
@@ -2759,3 +2759,162 @@ export type WsEvent =
   | { event: 'sigint:smartmove'; data: { walletAddress: string; marketId: string; direction: string; amount: number } }
   | { event: 'system:moduleStatus'; data: { moduleId: ModuleId; status: 'healthy' | 'degraded' | 'down' } };
 ```
+
+### V2.14 Paper Trading & Orderbook Fixes (2026-03-26)
+
+**Issues identified and fixed:**
+
+1. **Paper position jobs not running:** `paper-position-update` and `position-reconciliation` jobs were defined in `queue.ts` and `workers.ts` but were never registered in Redis because the worker hadn't been restarted since they were added. **Fix:** Worker restart required after deployment to register all new job schedulers.
+
+2. **Stale paper positions cleared:** All old paper positions created under the previous system (no fees, 0.5% threshold, probability guessing) were deleted to prevent learning loop contamination. New positions will be created under the fee-adjusted system (3% EV threshold, Kalshi fee model).
+
+3. **Cent symbol encoding bug:** `\u00a2` used in JSX text content (outside `{}` expressions) in `Backtest.tsx` rendered as literal `\u00a2` instead of ¢. **Fix:** Changed to `{'\u00a2'}` (inside JS expression) so the Unicode escape is properly interpreted.
+
+4. **Clickable paper positions:** Paper position rows in both `Backtest.tsx` (live performance table) and `Portfolio.tsx` now navigate to the Signal Viewer (`/markets/:id/signals`) on click. The `/backtest/live-performance` API now returns `marketId` in position data.
+
+5. **Orderbook sync silent failures:** The `orderbook-sync` job was registered and running but silently failing for all markets (errors caught per-market, job completes with 0 synced). Only 500 snapshots exist from a single 8-minute window. **Fix:** Added warn-level logging when synced count is 0, improved per-market error logging with platform and error message details. Root cause likely platform API auth/connectivity — check logs after worker restart.
+
+6. **Job handler return values:** `handleOrderBookSync`, `handlePaperPositionUpdate`, and `handlePositionReconciliation` now return structured results visible in BullMQ job data for debugging.
+
+### V2.15 Platform-Native Category Classification (2026-03-26)
+
+**File:** `apps/api/src/services/category-detector.ts`
+
+**Problem:** `detectCategory()` used keyword regex matching as the primary category signal. Both Kalshi and Polymarket provide category metadata in their API responses, but it was either passed incorrectly (Kalshi: `event_ticker` instead of `event.category`) or not captured at all (Polymarket: `category` field existed but wasn't in the interface).
+
+**Fix — 3-tier priority:**
+1. **Platform-provided category** (new primary): Both platforms' category strings are mapped to `MarketCategory` via `PLATFORM_CATEGORY_MAP`. Kalshi event categories (`Elections`, `Sports`, `Financials`, etc.) and Polymarket categories (`US-current-affairs`, `Sports`, `Crypto`, `Pop-Culture`, etc.) are all mapped.
+2. **Keyword regex matching** (fallback): Only used when platform category is missing or unmapped. Enhanced with European football leagues (EPL, La Liga, Champions League, Serie A, Bundesliga), team names (Manchester United, Barcelona, Bayern, etc.), and sports award patterns (MVP, Rookie of the Year, draft pick).
+3. **`reclassifyMarket()`** (secondary fallback): Catches remaining `OTHER` markets via more aggressive patterns.
+
+**Changes:**
+- `category-detector.ts`: Replaced `eventTicker` parameter with `platformCategory`. Added `PLATFORM_CATEGORY_MAP` lookup table covering both Kalshi and Polymarket category strings.
+- `kalshi-client.ts`: Changed `normalizeMarket()` to pass `k.category` (event category from API) instead of `k.event_ticker`.
+- `polymarket-client.ts`: Added `category` field to `PolymarketGammaMarket` interface. Pass `gamma.category` to `detectCategory()`.
+
+**Verification:** "Manchester United finish in top 4 of EPL" → `SPORTS` (was potentially `OTHER` or `POLITICS` before).
+
+**priceLevel in FeatureModel:** Intentionally kept with `weight=0` in `packages/cortex/src/feature-model.ts`. It's stored in signal metadata for observability but excluded from `flattenFeatures()` model input. This prevents price anchoring bias: if market price influenced the probability model, predictions would converge to market price and edge would always be ~0. This is by design, not a bug.
+
+### V2.16 Market Recategorization & Confidence Gate (2026-03-26)
+
+**1. Bulk recategorization of existing markets:**
+
+Added `POST /system/recategorize-markets` endpoint that re-runs `detectCategory()` + `reclassifyMarket()` on all markets in the database. First run: **454 markets recategorized** out of 11,541 total. Largest change: 346 markets moved from POLITICS → SPORTS (European football, NBA awards, and team-name markets that the old regex missed).
+
+**2. Minimum confidence for actionability:**
+
+**File:** `apps/api/src/engine/cortex.ts`
+
+Added 4th gate to the actionability check: `confidence >= MIN_CONFIDENCE_FOR_ACTIONABLE` (20%). An 11% confidence signal is noise — the system was entering paper positions on low-conviction edges that added variance without signal.
+
+**Constant:** `MIN_CONFIDENCE_FOR_ACTIONABLE = 0.20` in `packages/shared/src/constants.ts`
+
+**Full actionability gate (all 4 must pass):**
+1. EV ≥ 3% (`EDGE_ACTIONABILITY_THRESHOLD`)
+2. Confidence ≥ 20% (`MIN_CONFIDENCE_FOR_ACTIONABLE`)
+3. ≥ 2 modules contributed probability signals
+4. ≥ 1 LLM module contributed (LEGEX/DOMEX/ALTEX/REFLEX)
+
+The `buildActionabilitySummary()` now reports confidence failures explicitly (e.g., "confidence 11% below 20% minimum").
+
+**3. Low-confidence paper positions purged:** 10 positions with confidence < 20% deleted. 37 positions with ≥ 20% confidence retained.
+
+### V2.17 SPEEDEX Rewrite & Speed Pipeline Paper Positions (2026-03-26)
+
+**Problem:** SPEEDEX had 0 signals because:
+1. Its `parseThreshold()` regex looked for `"BTC > $100K"` style titles but Kalshi crypto titles are `"Bitcoin price range on Mar 26, 2026?"` — no match
+2. 97% of Kalshi crypto contracts are BRACKET type (2,389 out of 2,449 expiring in 24h) but SPEEDEX only handled simple above/below (FLOOR) logic
+3. The proper bracket/floor math already existed in `crypto-price.ts` (`calculateBracketImpliedProb`, `parseKalshiCryptoTicker`) but SPEEDEX didn't use it
+4. Speed pipeline created raw signals but never synthesized edges or entered paper positions
+
+**Fix — SPEEDEX rewrite** (`apps/api/src/modules/speedex.ts`):
+- Uses `parseKalshiCryptoTicker()` to parse contract type, strike, and bracket width from `platformContractId`
+- BRACKET contracts: `P(bracket) = N(d_upper) - N(d_lower)` via `calculateBracketImpliedProb()` with realized vol
+- FLOOR contracts: `P(above) = N(d)` via `calculateSpotImpliedProb()` with realized vol
+- Spot prices from CoinGecko (30s cache) or Binance WebSocket (ms latency)
+- Edge = vol-implied probability vs market price. Minimum 3% divergence + 1.5x fee coverage
+- Confidence boosted for near-expiry contracts (<1h: 1.5x, <4h: 1.2x)
+- Zero LLM calls — pure Black-Scholes math
+
+**Fix — Speed pipeline paper positions** (`apps/api/src/jobs/speed-pipeline.job.ts`):
+- After persisting SPEEDEX signals, checks if edge meets actionability thresholds (EV ≥ 3%, confidence ≥ 20%)
+- Creates paper positions directly from SPEEDEX edges — no CORTEX synthesis needed, no LLM module requirement
+- This is the ONLY pipeline that creates positions from pure-math signals
+- Logs contract type (BRACKET/FLOOR) and edge details on position entry
+
+**Speed pipeline passes `platformContractId`** in contract data so SPEEDEX can parse the ticker format.
+
+**Key math:**
+- BTC hourly realized vol ≈ 0.6% (annualized ~57%)
+- Vol scales by √T for the relevant window
+- Bracket probability for $500 BTC bracket centered on spot at 1h ≈ 30%
+- Off-center brackets drop rapidly — this is correct, not mispricing
+
+**Zero Claude calls verified:** Neither `speed-pipeline.job.ts` nor `speedex.ts` import or call any LLM services.
+
+**Price fallback for crypto brackets:** Most Kalshi crypto bracket contracts have `lastPrice = null` (no trades, only asks). Speed pipeline now uses fallback chain: `lastPrice ?? midpoint(bestBid, bestAsk) ?? bestAsk ?? bestBid`. Injects resolved price into contract data so SPEEDEX sees it.
+
+**First live run results:** 50 markets → 44 filtered (price <5¢ or >95¢ — correct for off-center brackets) → 6 processed → 12 signals (6 SPEEDEX + 6 FLOWEX) → 6 paper positions entered. All in 320ms.
+
+### V2.18 Paper Trading Quality Fixes (2026-03-26)
+
+**1. Direction-aware P&L calculation** (`paper-trader.ts`):
+- BUY_YES: P&L = (currentPrice - entryPrice) × kellySize — profit when YES price goes UP
+- BUY_NO: P&L = (entryPrice - currentPrice) × kellySize — profit when YES price goes DOWN
+- Previous bug: `updatePaperPositions()` skipped all crypto brackets because `lastPrice = null`
+- Fix: Added `resolveContractPrice()` fallback chain for P&L updates too (same as speed pipeline)
+
+**2. Position display names** (`paper-trader.ts` + `backtest.ts`):
+- Added `buildPositionDisplayName()`: parses `platformContractId` to show "BTC $67,050-$67,550 MAR 26 9PM" instead of generic "Bitcoin price range on Mar 26, 2026?"
+- Backtest API endpoint includes contract's `platformContractId` and maps through display name builder
+- Handles BRACKET (range), FLOOR (above/below), and non-crypto markets (passthrough)
+
+**3. Speed pipeline guards** (`speed-pipeline.job.ts`):
+- **Min 30 minutes to expiry** (`MIN_HOURS_TO_EXPIRY = 0.5`): No last-second trades on expiring contracts
+- **Min $100 contract volume** (`MIN_CRYPTO_VOLUME = 100`): Skip illiquid brackets
+- **Max 3 positions per asset per date** (`MAX_POSITIONS_PER_ASSET_DATE = 3`): Prevents over-concentration (was 6 BTC brackets in one cycle)
+- `checkConcentrationLimit()` queries open positions grouped by asset + expiry date
+
+**4. Expired position handling** (`position-sync.ts` + `paper-trader.ts`):
+- Added expired market case in `reconcilePositions()`: if `closesAt < now` but no `resolution`, close with final P&L estimate
+- Also added in `updatePaperPositions()` auto-close for expired markets
+- Uses price fallback chain for final price when `lastPrice` is null
+
+**5. Vol model validation logging** (`speedex.ts`):
+- Logs one complete SPEEDEX example per worker session with all model inputs/outputs:
+  spot price, bracket [low, high], hours to expiry, hourly vol (0.6%), period sigma, model probability, market price, calculated edge, fee estimate
+- Tagged with `validation: 'SPEEDEX_VOL_MODEL'` for easy grep
+
+### V2.19 Overnight Research Stability (2026-03-26 PM)
+
+**Goal:** Stabilize the RESEARCH pipeline for clean overnight paper trade data collection.
+
+**1. SPORTS-EDGE Safety** (`base-agent.ts`, `sports-edge.ts`):
+- Added `requireContext` option to `DomexAgentOptions`. When true, agent returns `null` if context provider returns empty/no data.
+- SPORTS-EDGE sets `requireContext: true` — LLM never runs without real odds data from The Odds API.
+- `ODDS_API_KEY` confirmed empty in `.env` — SPORTS-EDGE is safely disabled until key is configured.
+- Prevents hallucinated features (e.g. "62% Schauffele") from producing false actionable edges.
+
+**2. Actionability Gates** (verified, already implemented in `cortex.ts`):
+- EV >= 3% (covers Kalshi round-trip fees)
+- Confidence >= 20% (`MIN_CONFIDENCE_FOR_ACTIONABLE`)
+- At least 2 modules contributed probability signals
+- At least 1 LLM module (LEGEX/DOMEX/ALTEX/REFLEX) — pure stats can't analyze events
+
+**3. Category Re-map** (one-time, via `POST /system/recategorize-markets`):
+- 595 of 12,628 markets updated. Key: 32 POLITICS→SPORTS, 56 CULTURE→SPORTS.
+- Sports markets (European football, NBA/NFL props) no longer misrouted to GEO-INTEL/LEGAL-EAGLE.
+
+**4. Speed Pipeline Paper Trades Disabled** (`speed-pipeline.job.ts`):
+- Crypto bracket data quality unreliable — paper trades from speed pipeline temporarily stopped.
+- Pipeline still runs every 30s for monitoring/signals (SPEEDEX + FLOWEX).
+- Research pipeline handles all paper trade creation until crypto data is validated.
+
+**5. LLM Cost Controls** (`llm-budget-tracker.ts`, `.env`):
+- `LLM_DAILY_BUDGET` lowered from $25 to $5.
+- `HARD_LIMIT` lowered from $20 to $5 — no exceptions.
+- Previous day: $25.47 (14K SCREEN_MARKET calls = $20.87). New budget enforces $5/day cap.
+- Adaptive rate limiting: 100 calls/hr normal → 50 at 50% budget → 10 at 80%.
+
+**6. Worker restart:** All RESEARCH modules confirmed online (COGEX, FLOWEX, LEGEX, DOMEX, ALTEX, REFLEX). Speed pipeline running with 0 paper positions (disabled). Paper-position-update and position-reconciliation jobs verified running every 5 minutes.

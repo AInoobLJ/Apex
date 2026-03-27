@@ -29,6 +29,11 @@ export interface DomexAgentOptions {
   task?: LLMTask;
   /** Optional async function that returns extra context to inject into the user message */
   contextProvider?: (title: string, description: string | null) => Promise<{ context: string; freshness: 'live' | 'cached' | 'stale' | 'none'; sources: string[] }>;
+  /**
+   * If true, the agent returns null when the context provider returns empty/no data.
+   * Prevents LLM from hallucinating features without real data (e.g. sports odds).
+   */
+  requireContext?: boolean;
 }
 
 export function createDomexAgent(opts: DomexAgentOptions): DomexAgent {
@@ -40,7 +45,7 @@ export function createDomexAgent(opts: DomexAgentOptions): DomexAgent {
     categories: opts.categories,
     async run(title, description, category, closesAt?) {
       try {
-        // Fetch optional context (e.g., FRED data for FED-HAWK)
+        // Fetch optional context (e.g., FRED data for FED-HAWK, odds for SPORTS-EDGE)
         let extraContext = '';
         let freshness: DomexAgentResult['dataFreshness'] = 'none';
         let sources: string[] = [];
@@ -51,8 +56,15 @@ export function createDomexAgent(opts: DomexAgentOptions): DomexAgent {
             freshness = ctx.freshness;
             sources = ctx.sources;
           } catch {
-            // Continue without context on failure
+            // Continue without context on failure (unless required)
           }
+        }
+
+        // SAFETY: If context is required but empty/missing, return null instead of
+        // letting the LLM hallucinate features without real data.
+        if (opts.requireContext && (!extraContext || extraContext.trim() === '')) {
+          logger.debug({ agent: opts.name }, `${opts.name}: no context data available — returning null (requireContext=true)`);
+          return null;
         }
 
         const result = await callClaude<DomexAgentResult>({

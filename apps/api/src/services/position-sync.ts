@@ -88,6 +88,36 @@ export async function reconcilePositions(): Promise<SyncResult> {
           resolution: market.resolution,
           pnl,
         }, 'Paper position auto-closed on resolution');
+      } else if (market.closesAt && new Date(market.closesAt).getTime() < Date.now()) {
+        // Market has expired but no resolution yet — close with current P&L estimate
+        // This handles crypto brackets that expire without explicit resolution status
+        const contract = await prisma.contract.findFirst({
+          where: { marketId: pos.marketId, outcome: 'YES' },
+          select: { lastPrice: true, bestAsk: true, bestBid: true },
+        });
+        const finalPrice = contract?.lastPrice ?? contract?.bestAsk ?? contract?.bestBid ?? pos.currentPrice ?? 0;
+        const grossPnl = pos.direction === 'BUY_YES'
+          ? (finalPrice - pos.entryPrice) * pos.kellySize
+          : (pos.entryPrice - finalPrice) * pos.kellySize;
+
+        await prisma.paperPosition.update({
+          where: { id: pos.id },
+          data: {
+            isOpen: false,
+            closedAt: new Date(),
+            closeReason: 'expired',
+            currentPrice: finalPrice,
+            paperPnl: grossPnl,
+          },
+        });
+
+        synced++;
+        logger.info({
+          marketId: pos.marketId,
+          direction: pos.direction,
+          finalPrice,
+          pnl: grossPnl,
+        }, 'Paper position closed — market expired without resolution');
       } else if (market.status === 'ACTIVE') {
         // Market still active — update current price from latest contract data
         const contract = await prisma.contract.findFirst({

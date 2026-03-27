@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, BarChart, Bar } from 'recharts';
 import { CardSkeleton } from '../components/Skeleton';
 import { colors, fonts } from '../theme';
@@ -15,6 +16,7 @@ const apiFetch = async (path: string, method = 'GET') => {
 };
 
 export function Backtest() {
+  const navigate = useNavigate();
   const [freeData, setFreeData] = useState<any>(null);
   const [deepData, setDeepData] = useState<any>(null);
   const [liveData, setLiveData] = useState<any>(null);
@@ -131,13 +133,13 @@ export function Backtest() {
                     </thead>
                     <tbody>
                       {liveData.positions.map((p: any, i: number) => (
-                        <tr key={i} style={{ borderBottom: `1px solid ${colors.border}20` }}>
+                        <tr key={i} onClick={() => p.marketId && navigate(`/markets/${p.marketId}/signals`)} style={{ borderBottom: `1px solid ${colors.border}20`, cursor: p.marketId ? 'pointer' : 'default' }} onMouseEnter={(e) => { if (p.marketId) (e.currentTarget as HTMLElement).style.backgroundColor = colors.bgTertiary; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = ''; }}>
                           <td style={{ padding: '6px 8px', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</td>
                           <td style={{ padding: '6px 8px', color: p.direction === 'BUY_YES' ? colors.green : colors.red }}>{p.direction}</td>
-                          <td style={{ padding: '6px 8px' }}>{(p.entryPrice * 100).toFixed(1)}\u00a2</td>
-                          <td style={{ padding: '6px 8px' }}>{(p.currentPrice * 100).toFixed(1)}\u00a2</td>
+                          <td style={{ padding: '6px 8px' }}>{(p.entryPrice * 100).toFixed(1)}{'\u00a2'}</td>
+                          <td style={{ padding: '6px 8px' }}>{(p.currentPrice * 100).toFixed(1)}{'\u00a2'}</td>
                           <td style={{ padding: '6px 8px' }}>{(p.edge * 100).toFixed(1)}%</td>
-                          <td style={{ padding: '6px 8px', color: p.pnl >= 0 ? colors.green : colors.red }}>{p.pnl >= 0 ? '+' : ''}{(p.pnl * 100).toFixed(1)}\u00a2</td>
+                          <td style={{ padding: '6px 8px', color: p.pnl >= 0 ? colors.green : colors.red }}>{p.pnl >= 0 ? '+' : ''}{(p.pnl * 100).toFixed(1)}{'\u00a2'}</td>
                           <td style={{ padding: '6px 8px', color: p.isOpen ? colors.accent : colors.textMuted }}>{p.isOpen ? 'OPEN' : 'CLOSED'}</td>
                         </tr>
                       ))}

@@ -3,8 +3,8 @@ import { Prisma } from '@apex/db';
 import { logger } from '../lib/logger';
 
 const SYSTEM_CONFIG_KEY = 'llm_daily_budget';
-const DEFAULT_DAILY_BUDGET = 25.00; // $25/day default
-const HARD_LIMIT = 20.00;           // $20/day HARD KILL — no exceptions
+const DEFAULT_DAILY_BUDGET = 5.00;  // $5/day default — research mode
+const HARD_LIMIT = 5.00;            // $5/day HARD KILL — no exceptions
 const ALERT_THRESHOLD = 0.80;       // 80% = alert
 const THROTTLE_50_THRESHOLD = 0.50; // 50% = reduce to 50 calls/hr
 const THROTTLE_80_THRESHOLD = 0.80; // 80% = reduce to 10 calls/hr

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { DataTable, Column } from '../components/DataTable';
 import { CardSkeleton, TableSkeleton } from '../components/Skeleton';
@@ -33,6 +34,7 @@ const positionColumns: Column<Record<string, unknown>>[] = [
 ];
 
 export function Portfolio() {
+  const navigate = useNavigate();
   const [summary, setSummary] = useState<Record<string, any> | null>(null);
   const [positions, setPositions] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
@@ -91,6 +93,10 @@ export function Portfolio() {
         <DataTable
           columns={positionColumns}
           data={positions}
+          onRowClick={(row) => {
+            const marketId = (row as any).marketId;
+            if (marketId) navigate(`/markets/${marketId}/signals`);
+          }}
           emptyMessage="No positions yet"
         />
       </div>

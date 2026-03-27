@@ -4,6 +4,7 @@ import { runBacktest } from '../services/backtest-engine';
 import { runRetroactiveBacktest } from '../services/retroactive-backtest';
 import { ingestHistoricalMarkets } from '../jobs/historical-ingest.job';
 import { runFreeModuleBacktest, runDeepBacktest, estimateDeepBacktestCost } from '../services/historical-backtest';
+import { buildPositionDisplayName } from '../services/paper-trader';
 
 export default async function backtestRoutes(fastify: FastifyInstance) {
   // GET /backtest/results — latest backtest results
@@ -60,7 +61,11 @@ export default async function backtestRoutes(fastify: FastifyInstance) {
   // GET /backtest/live-performance — forward-looking paper trade results (no bias)
   fastify.get('/backtest/live-performance', async () => {
     const positions = await prisma.paperPosition.findMany({
-      include: { market: { select: { title: true, resolution: true } } },
+      include: {
+        market: {
+          include: { contracts: { where: { outcome: 'YES' }, take: 1 } },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -95,7 +100,8 @@ export default async function backtestRoutes(fastify: FastifyInstance) {
       avgEdge,
       daysActive,
       positions: positions.slice(0, 50).map(p => ({
-        title: p.market.title,
+        marketId: p.marketId,
+        title: buildPositionDisplayName(p.market.title, (p.market as any).contracts?.[0]?.platformContractId),
         direction: p.direction,
         entryPrice: p.entryPrice,
         currentPrice: p.currentPrice,

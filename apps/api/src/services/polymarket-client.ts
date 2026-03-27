@@ -30,6 +30,7 @@ export interface PolymarketGammaMarket {
   bestAsk: number;
   liquidity: number | string;
   liquidityNum?: number;
+  category?: string;       // Platform category (e.g., "Sports", "Crypto", "US-current-affairs")
   // Legacy fields (may or may not exist)
   tokens?: PolymarketToken[];
 }
@@ -134,7 +135,7 @@ export class PolymarketClient implements PredictionMarketAdapter {
 
   normalizeMarket(raw: RawMarket): NormalizedMarket {
     const gamma = raw.raw as unknown as PolymarketGammaMarket;
-    const category = detectCategory(raw.title, raw.description);
+    const category = detectCategory(raw.title, raw.description, gamma.category);
     const tokens = parseGammaTokens(gamma);
 
     return {

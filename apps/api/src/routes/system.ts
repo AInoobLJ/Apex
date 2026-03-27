@@ -31,6 +31,48 @@ export default async function systemRoutes(fastify: FastifyInstance) {
     return { queues };
   });
 
+  // POST /system/recategorize-markets — re-run category detection on all markets
+  fastify.post('/system/recategorize-markets', async () => {
+    const { detectCategory } = await import('../services/category-detector');
+    const { reclassifyMarket } = await import('../services/category-classifier');
+
+    const markets = await prisma.market.findMany({
+      select: { id: true, title: true, description: true, category: true },
+    });
+
+    const changes: Record<string, { from: string; to: string; count: number }> = {};
+    let updated = 0;
+
+    for (const m of markets) {
+      const detected = detectCategory(m.title, m.description);
+      const newCategory = reclassifyMarket(m.title, detected);
+
+      if (newCategory !== m.category) {
+        const key = `${m.category} → ${newCategory}`;
+        changes[key] = changes[key] || { from: m.category, to: newCategory, count: 0 };
+        changes[key].count++;
+
+        await prisma.market.update({
+          where: { id: m.id },
+          data: { category: newCategory },
+        });
+        updated++;
+      }
+
+      if (updated % 100 === 0 && updated > 0) await new Promise(r => setImmediate(r));
+    }
+
+    return { total: markets.length, updated, changes: Object.values(changes) };
+  });
+
+  // POST /system/trigger-orderbook-sync — manually trigger orderbook sync
+  fastify.post('/system/trigger-orderbook-sync', async () => {
+    const { runOrderBookSync } = await import('../services/orderbook-sync');
+    const start = Date.now();
+    const synced = await runOrderBookSync();
+    return { synced, durationMs: Date.now() - start };
+  });
+
   // GET /system/circuit-breakers — status of all circuit breakers
   fastify.get('/system/circuit-breakers', async () => {
     const { getAllCircuitBreakers } = await import('../lib/circuit-breaker');

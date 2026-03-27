@@ -1,5 +1,5 @@
 import { SignalOutput, EdgeOutput, SignalContribution, clampProbability, ModuleId } from '@apex/shared';
-import { EDGE_ACTIONABILITY_THRESHOLD } from '@apex/shared';
+import { EDGE_ACTIONABILITY_THRESHOLD, MIN_CONFIDENCE_FOR_ACTIONABLE } from '@apex/shared';
 import { syncPrisma as prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { applyCalibration, fuseSignals, RawSignal } from '@apex/cortex';
@@ -104,29 +104,32 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
   }));
 
   // ── Actionability Gate ──
-  // Must pass ALL three checks:
-  // 1. EV exceeds fee-adjusted threshold
-  // 2. At least 2 modules contributed probability signals
-  // 3. At least 1 LLM module contributed (pure stats alone can't analyze the event)
+  // Must pass ALL four checks:
+  // 1. EV exceeds fee-adjusted threshold (3%)
+  // 2. Confidence meets minimum floor (20%) — below this is noise
+  // 3. At least 2 modules contributed probability signals
+  // 4. At least 1 LLM module contributed (pure stats alone can't analyze the event)
   const moduleCount = probabilitySignals.length;
   const llmModuleCount = probabilitySignals.filter(s => LLM_MODULES.has(s.moduleId)).length;
   const evMeetsThreshold = expectedValue >= EDGE_ACTIONABILITY_THRESHOLD;
+  const confidenceMeetsThreshold = confidence >= MIN_CONFIDENCE_FOR_ACTIONABLE;
   const hasEnoughModules = moduleCount >= MIN_MODULES_FOR_ACTIONABLE;
   const hasLLMModule = llmModuleCount >= MIN_LLM_MODULES_FOR_ACTIONABLE;
-  const isActionable = evMeetsThreshold && hasEnoughModules && hasLLMModule;
+  const isActionable = evMeetsThreshold && confidenceMeetsThreshold && hasEnoughModules && hasLLMModule;
 
   // ── Build "Why is this actionable?" summary ──
   const actionabilitySummary = buildActionabilitySummary({
     cortexProbability, marketPrice, edgeMagnitude, edgeDirection, confidence,
     expectedValue, moduleCount, llmModuleCount, signalContributions,
-    evMeetsThreshold, hasEnoughModules, hasLLMModule, isActionable,
+    evMeetsThreshold, confidenceMeetsThreshold, hasEnoughModules, hasLLMModule, isActionable,
   });
 
   if (!isActionable && evMeetsThreshold) {
+    const reason = !confidenceMeetsThreshold ? 'low confidence' : !hasEnoughModules ? 'insufficient modules' : 'no LLM module';
     logger.debug({
-      marketId, moduleCount, llmModuleCount,
-      reason: !hasEnoughModules ? 'insufficient modules' : 'no LLM module',
-    }, 'Edge has sufficient EV but fails module requirement — NOT actionable');
+      marketId, moduleCount, llmModuleCount, confidence: confidence.toFixed(3),
+      reason,
+    }, 'Edge has sufficient EV but fails actionability gate — NOT actionable');
   }
 
   return {
@@ -156,13 +159,13 @@ function buildActionabilitySummary(params: {
   edgeDirection: string; confidence: number; expectedValue: number;
   moduleCount: number; llmModuleCount: number;
   signalContributions: SignalContribution[];
-  evMeetsThreshold: boolean; hasEnoughModules: boolean; hasLLMModule: boolean;
+  evMeetsThreshold: boolean; confidenceMeetsThreshold: boolean; hasEnoughModules: boolean; hasLLMModule: boolean;
   isActionable: boolean;
 }): string {
   const {
     cortexProbability, marketPrice, edgeMagnitude, edgeDirection, confidence,
     expectedValue, moduleCount, llmModuleCount, signalContributions,
-    evMeetsThreshold, hasEnoughModules, hasLLMModule, isActionable,
+    evMeetsThreshold, confidenceMeetsThreshold, hasEnoughModules, hasLLMModule, isActionable,
   } = params;
 
   const parts: string[] = [];
@@ -189,6 +192,7 @@ function buildActionabilitySummary(params: {
   if (!isActionable) {
     const failures: string[] = [];
     if (!evMeetsThreshold) failures.push(`EV ${(expectedValue * 100).toFixed(2)}% below 3% threshold`);
+    if (!confidenceMeetsThreshold) failures.push(`confidence ${(confidence * 100).toFixed(0)}% below 20% minimum`);
     if (!hasEnoughModules) failures.push(`only ${moduleCount} module(s) — need at least 2`);
     if (!hasLLMModule) failures.push(`no LLM modules (LEGEX/DOMEX/ALTEX/REFLEX) — pure stats alone cannot determine actionability`);
     parts.push(`NOT ACTIONABLE: ${failures.join('; ')}.`);

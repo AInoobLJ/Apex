@@ -207,7 +207,7 @@ export class KalshiClient implements PredictionMarketAdapter {
 
   normalizeMarket(raw: RawMarket): NormalizedMarket {
     const k = raw.raw as unknown as KalshiMarket;
-    const category = detectCategory(raw.title, raw.description, k.event_ticker);
+    const category = detectCategory(raw.title, raw.description, k.category);
 
     const yesBid = parseKalshiPrice(k.yes_bid_dollars, k.yes_bid);
     const yesAsk = parseKalshiPrice(k.yes_ask_dollars, k.yes_ask);
