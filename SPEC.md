@@ -2926,7 +2926,12 @@ The `buildActionabilitySummary()` now reports confidence failures explicitly (e.
 **1. The Odds API Integration** (`odds-api.ts`):
 - Configured `ODDS_API_KEY` in `.env` (free tier: 500 req/month).
 - Fixed response field mapping: API returns `home_team`/`away_team` (snake_case), not `homeTeam` (camelCase).
-- Added 1-hour in-memory cache per sport key to stay within free tier limits.
+- Tiered in-memory caching based on time to event:
+  - >7 days out: 6 hours (futures — odds barely move)
+  - 1-7 days out: 2 hours (odds start moving as game approaches)
+  - <24 hours: 15 minutes (game day — injuries, line movement, sharp money)
+  - Live/in-progress: 2 minutes
+- Monthly usage tracked in `SystemConfig` key `odds_api_monthly_usage` (calls, remaining, month). Warns at ≤50 remaining. Exposed via `GET /system/odds-api-usage`.
 - Added team-name-based sport detection: if title contains "Hornets" → `basketball_nba`, even without explicit "NBA" keyword. Covers 120+ team names across NBA, NFL, MLB, NHL.
 - Added over/under data extraction alongside moneyline and spread.
 

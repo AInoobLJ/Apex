@@ -2,13 +2,26 @@
  * The Odds API (the-odds-api.com) — free tier: 500 requests/month.
  * Provides live odds, injury news, and recent records for sports markets.
  *
- * Caching: 1-hour in-memory cache per sport key to stay within free tier limits.
- * With ~50 sports markets and 4 evals/day, uncached usage would exceed 500/month in days.
+ * Tiered caching based on time to event:
+ *   >7 days:  6 hours  (futures — odds barely move)
+ *   1-7 days: 2 hours  (odds start moving as game approaches)
+ *   <24 hours: 15 min  (game day — injuries, line movement, sharp money)
+ *   Live:      2 min   (in-progress games)
+ *
+ * Monthly usage tracked in SystemConfig to monitor against 500 free tier limit.
  */
 import { logger } from '../../lib/logger';
+import { prisma } from '../../lib/prisma';
 
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// ── Tiered cache TTLs based on time to event ──
+const CACHE_TTL = {
+  FUTURES:  6 * 60 * 60 * 1000,  // >7 days out: 6 hours
+  UPCOMING: 2 * 60 * 60 * 1000,  // 1-7 days out: 2 hours
+  GAMEDAY:  15 * 60 * 1000,      // <24 hours: 15 minutes
+  LIVE:     2 * 60 * 1000,       // in-progress: 2 minutes
+} as const;
 
 interface OddsData {
   home_team: string;
@@ -26,6 +39,87 @@ export interface SportsContext {
 
 // ── In-memory cache: sport key → { games, fetchedAt } ──
 const oddsCache = new Map<string, { games: OddsData[]; fetchedAt: number }>();
+
+// ── Monthly usage tracking (in-memory + DB persistence) ──
+const USAGE_CONFIG_KEY = 'odds_api_monthly_usage';
+let cachedMonthlyUsage = { month: '', calls: 0, remaining: 500 };
+
+interface OddsApiUsage {
+  month: string;      // "2026-03"
+  calls: number;
+  remaining: number;
+  lastUpdated: string; // ISO timestamp
+}
+
+function getCurrentMonth(): string {
+  return new Date().toISOString().slice(0, 7); // "2026-03"
+}
+
+async function recordApiCall(remaining?: number): Promise<void> {
+  const month = getCurrentMonth();
+
+  // Reset counter on new month
+  if (cachedMonthlyUsage.month !== month) {
+    cachedMonthlyUsage = { month, calls: 0, remaining: 500 };
+  }
+
+  cachedMonthlyUsage.calls++;
+  if (remaining !== undefined) {
+    cachedMonthlyUsage.remaining = remaining;
+  }
+
+  // Persist to DB every 5 calls (avoid DB hit on every request)
+  if (cachedMonthlyUsage.calls % 5 === 0 || remaining !== undefined) {
+    try {
+      const usage: OddsApiUsage = {
+        month,
+        calls: cachedMonthlyUsage.calls,
+        remaining: cachedMonthlyUsage.remaining,
+        lastUpdated: new Date().toISOString(),
+      };
+      await prisma.systemConfig.upsert({
+        where: { key: USAGE_CONFIG_KEY },
+        create: { key: USAGE_CONFIG_KEY, value: usage as any },
+        update: { value: usage as any },
+      });
+    } catch {
+      // Non-critical — usage tracking failure shouldn't block odds fetching
+    }
+  }
+
+  // Warn when running low
+  if (cachedMonthlyUsage.remaining <= 50) {
+    logger.warn({
+      calls: cachedMonthlyUsage.calls,
+      remaining: cachedMonthlyUsage.remaining,
+      month,
+    }, 'Odds API quota running low — consider upgrading or reducing polling');
+  }
+}
+
+/**
+ * Get current Odds API usage stats.
+ */
+export async function getOddsApiUsage(): Promise<OddsApiUsage> {
+  try {
+    const config = await prisma.systemConfig.findUnique({
+      where: { key: USAGE_CONFIG_KEY },
+    });
+    if (config?.value) {
+      const usage = config.value as unknown as OddsApiUsage;
+      // Sync in-memory cache
+      cachedMonthlyUsage = { month: usage.month, calls: usage.calls, remaining: usage.remaining };
+      return usage;
+    }
+  } catch { /* fall through */ }
+
+  return {
+    month: getCurrentMonth(),
+    calls: cachedMonthlyUsage.calls,
+    remaining: cachedMonthlyUsage.remaining,
+    lastUpdated: new Date().toISOString(),
+  };
+}
 
 // Sport key mapping for common prediction market terms
 const SPORT_KEYWORDS: Record<string, string> = {
@@ -145,12 +239,48 @@ function americanToImplied(odds: number): number {
 }
 
 /**
- * Fetch odds for a sport, with 1-hour in-memory cache.
+ * Determine cache TTL based on the nearest event start time in the game list.
+ *
+ * Tiered:
+ *   >7 days:   6 hours  (futures)
+ *   1-7 days:  2 hours  (upcoming)
+ *   <24 hours: 15 min   (game day)
+ *   Live:      2 min    (in-progress)
+ */
+function getCacheTtl(games: OddsData[]): number {
+  if (games.length === 0) return CACHE_TTL.UPCOMING; // default if no games
+
+  const now = Date.now();
+  let nearestMs = Infinity;
+
+  for (const game of games) {
+    const start = new Date(game.commence_time).getTime();
+    const diff = start - now;
+    if (Math.abs(diff) < Math.abs(nearestMs)) {
+      nearestMs = diff;
+    }
+  }
+
+  // Game already started (negative diff) → live
+  if (nearestMs < 0) return CACHE_TTL.LIVE;
+
+  const hoursOut = nearestMs / (60 * 60 * 1000);
+  if (hoursOut < 24) return CACHE_TTL.GAMEDAY;
+  if (hoursOut < 7 * 24) return CACHE_TTL.UPCOMING;
+  return CACHE_TTL.FUTURES;
+}
+
+/**
+ * Fetch odds for a sport, with tiered caching based on time to event.
  */
 async function fetchOddsCached(sport: string, apiKey: string): Promise<OddsData[]> {
   const cached = oddsCache.get(sport);
-  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-    return cached.games;
+  if (cached) {
+    // Calculate TTL based on the cached games' event times
+    const ttl = getCacheTtl(cached.games);
+    if (Date.now() - cached.fetchedAt < ttl) {
+      return cached.games;
+    }
   }
 
   const axios = require('axios');
@@ -167,11 +297,21 @@ async function fetchOddsCached(sport: string, apiKey: string): Promise<OddsData[
   const games: OddsData[] = resp.data || [];
   oddsCache.set(sport, { games, fetchedAt: Date.now() });
 
-  // Log quota info from response headers
+  // Track API usage from response headers
   const remaining = resp.headers?.['x-requests-remaining'];
-  if (remaining !== undefined) {
-    logger.info({ sport, games: games.length, remaining }, 'Odds API fetched (cached for 1hr)');
-  }
+  const remainingNum = remaining !== undefined ? parseInt(remaining, 10) : undefined;
+  await recordApiCall(remainingNum);
+
+  const ttl = getCacheTtl(games);
+  const ttlLabel = ttl >= CACHE_TTL.FUTURES ? '6h (futures)'
+    : ttl >= CACHE_TTL.UPCOMING ? '2h (upcoming)'
+    : ttl >= CACHE_TTL.GAMEDAY ? '15m (game day)'
+    : '2m (live)';
+
+  logger.info({
+    sport, games: games.length, remaining: remainingNum,
+    cacheTtl: ttlLabel, monthCalls: cachedMonthlyUsage.calls,
+  }, `Odds API fetched (cached ${ttlLabel})`);
 
   return games;
 }

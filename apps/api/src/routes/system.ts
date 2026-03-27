@@ -128,6 +128,12 @@ export default async function systemRoutes(fastify: FastifyInstance) {
     };
   });
 
+  // GET /system/odds-api-usage — The Odds API monthly usage tracking
+  fastify.get('/system/odds-api-usage', async () => {
+    const { getOddsApiUsage } = await import('../services/data-sources/odds-api');
+    return getOddsApiUsage();
+  });
+
   // GET /system/job-errors — recent failed jobs with error details
   fastify.get('/system/job-errors', async (req) => {
     const { queue: queueName, limit: limitParam } = req.query as { queue?: string; limit?: string };

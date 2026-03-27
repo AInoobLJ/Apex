@@ -648,7 +648,8 @@
 
 - [x] [FIX] Configure `ODDS_API_KEY=c0bae8...` in `.env`. Verified: 500 requests remaining, NBA/MLB/NHL/NFL odds returning correctly.
 - [x] [FIX] Fix odds-api.ts response field mapping: API returns `home_team`/`away_team` (snake_case), not `homeTeam` (camelCase). Team matching was silently failing.
-- [x] [FIX] Add 1-hour in-memory cache per sport key to odds-api.ts. Free tier is 500 req/month — uncached would exceed in 2-3 days.
+- [x] [FIX] Add tiered in-memory cache to odds-api.ts based on time to event: >7d=6hr, 1-7d=2hr, <24hr=15min, live=2min. Free tier is 500 req/month — flat 1hr cache was wasteful for futures and too slow for game day.
+- [x] [FIX] Track Odds API monthly usage in SystemConfig (`odds_api_monthly_usage`): calls, remaining, month. Persists to DB every 5 calls. Warns at ≤50 remaining. Exposed via `GET /system/odds-api-usage`.
 - [x] [FIX] Add team-name-based sport detection to odds-api.ts: 120+ team names across NBA/NFL/MLB/NHL. "Will the Hornets beat the Knicks?" now detects as `basketball_nba` even without "NBA" keyword.
 - [x] [NEW] Create `espn-data.ts`: ESPN public API (no key required) for injuries, standings, team schedules. Static team ID maps for 4 major leagues. 2h/12h cache TTL.
 - [x] [FIX] Update sports-edge.ts contextProvider: calls The Odds API + ESPN in parallel. `requireContext: true` passes if EITHER source returns data.
