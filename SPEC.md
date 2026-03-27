@@ -3140,5 +3140,27 @@ The `buildActionabilitySummary()` now reports confidence failures explicitly (e.
 **Fresh signals will have:**
 - `sportsDataSource` tag: `fuku`, `oddsapi-h2h`, `futures-blocked`, `no-data`
 - `sportsMarketType` tag: `MATCH` or `FUTURES`
-- FUTURES markets blocked (no match-odds-to-futures confusion)
+- FUTURES markets: SPORTS-EDGE blocked (no match-odds-to-futures confusion), but ALL other modules still process them
 - Fuku data passthrough for CBB/NBA/NHL/Soccer matches (zero LLM cost)
+
+### V2.27 Verified: FUTURES Markets Flow Correctly Through Full Pipeline (2026-03-27 PM)
+
+**Concern:** The `detectSportsMarketType()` fix might block FUTURES sports markets from the entire pipeline, not just SPORTS-EDGE.
+
+**Verification result: Pipeline is correct. No code changes needed.**
+
+The architecture already handles this correctly because:
+
+1. **SPORTS-EDGE is a sub-agent inside DOMEX**, not a standalone module. When SPORTS-EDGE returns null, DOMEX still runs its other agents (GEO-INTEL, FED-HAWK, etc.) and produces a DOMEX signal if any agent returns features. Only if ALL agents return null does DOMEX return null.
+
+2. **Other modules (COGEX, FLOWEX, LEGEX, ALTEX, REFLEX) are independent** — they receive the market regardless of SPORTS-EDGE's result. SPORTS-EDGE returning null has zero impact on whether these modules process the market.
+
+3. **CORTEX fusion filters out missing modules** — if a module returned null, it simply isn't included in the weighted average. The fusion proceeds with whatever signals exist.
+
+4. **Multi-module requirement (2+ modules, 1+ LLM)** counts module-level signals, not agents. SPORTS-EDGE is inside DOMEX, so its null doesn't reduce the module count.
+
+**Confirmed with live data after clean reset:**
+- Champions League FUTURES markets: 6 signals from ALTEX + LEGEX (not SPORTS-EDGE)
+- 3 SPORTS edges created: Arsenal CL 3.8%, PSG CL 3.4%, Real Madrid CL 0.2%
+- Confidence appropriately low (5-6%) because fewer modules contributed
+- SPORTS-EDGE correctly did not contaminate these with match odds

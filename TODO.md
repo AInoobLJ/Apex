@@ -713,6 +713,13 @@
 - [x] [VERIFY] Dashboard verified: Edges 0, Portfolio $10K/$0 deployed/0 positions, Markets 18,603, System HEALTHY.
 - [x] [VERIFY] Fresh research cycle producing signals with SPEEDEX (20) and FLOWEX (7) first. LLM modules (COGEX/DOMEX/LEGEX/ALTEX/REFLEX) rebuilding on 15-min cycle.
 
+### Verified: FUTURES Markets Flow Through Full Pipeline (2026-03-27 PM)
+
+- [x] [VERIFY] Confirmed SPORTS-EDGE null does NOT block other modules: SPORTS-EDGE is a sub-agent inside DOMEX, not a standalone module. COGEX/FLOWEX/LEGEX/ALTEX/REFLEX all process FUTURES markets independently.
+- [x] [VERIFY] Confirmed multi-module requirement (2+, 1+ LLM) is unaffected by SPORTS-EDGE returning null.
+- [x] [VERIFY] Live data confirms: Champions League FUTURES → 6 signals from ALTEX+LEGEX, 3 edges created (Arsenal 3.8%, PSG 3.4%, Real Madrid 0.2%). Confidence appropriately low (5-6%). No match-odds contamination.
+- [x] [VERIFY] No code changes needed — pipeline architecture was already correct.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)
