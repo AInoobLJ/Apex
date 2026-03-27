@@ -81,13 +81,23 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
   const conflictFlag = fused.agreementScore < 0.5; // low agreement = conflict
   const edgeMagnitude = Math.abs(cortexProbability - marketPrice);
   const edgeDirection = cortexProbability > marketPrice ? 'BUY_YES' as const : 'BUY_NO' as const;
-  const expectedValue = edgeMagnitude * confidence;
-  const capitalEfficiency = edgeMagnitude / Math.sqrt(daysToResolution);
+
+  // Fee-aware EV: deduct estimated round-trip fees from edge before multiplying by confidence.
+  // Kalshi fee = 7% of profit per side. Conservative estimate: 0.07 × (1 - entryPrice) entry side.
+  // We don't have platform here, so use Kalshi (worst-case) fees as conservative estimate.
+  const entryPrice = edgeDirection === 'BUY_YES' ? marketPrice : (1 - marketPrice);
+  const estimatedFee = 0.07 * Math.max(0, 1 - entryPrice);
+  const netEdge = Math.max(0, edgeMagnitude - estimatedFee);
+  const expectedValue = netEdge * confidence;
+  const capitalEfficiency = netEdge / Math.sqrt(daysToResolution);
 
   // ── Stage 4: Kelly Sizing ──
   // f* = (p*b - q) / b, then quarter-Kelly for safety
   // b = payoff odds = (1/betPrice - 1)
-  const p = cortexProbability;
+  // p = probability of the outcome we're BETTING ON:
+  //   BUY_YES → p = cortexProbability (prob of YES)
+  //   BUY_NO  → p = 1 - cortexProbability (prob of NO)
+  const p = edgeDirection === 'BUY_YES' ? cortexProbability : (1 - cortexProbability);
   const q = 1 - p;
   const betPrice = edgeDirection === 'BUY_YES' ? marketPrice : (1 - marketPrice);
   const b = betPrice > 0.001 && betPrice < 0.999 ? (1 / betPrice - 1) : 0;

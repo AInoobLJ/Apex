@@ -3233,3 +3233,34 @@ kill $(cat /tmp/apex-all.pid)  # stop all from another terminal
 - POLITICS signals preserved: 13 ✅ (Viktor Orbán, Texas Primary, etc.)
 - SPORTS-EDGE correctly detecting FUTURES and returning null on recategorized markets ✅
 - Other modules (ALTEX, LEGEX, COGEX) still processing these markets ✅
+
+### V2.31 Fix Kelly Criterion + Fee-Adjusted EV (CRITICAL) (2026-03-27 PM)
+
+**3 bugs found and fixed:**
+
+**Bug 1 — Kelly used fabricated win probability (packages/cortex dead code):**
+The `packages/cortex/src/opportunity-scoring.ts` file (not used in production, but exported) used `winProb = 0.5 + fusedConfidence * 0.3` — a made-up formula instead of the actual `fusedProbability` from CORTEX. Fixed to use `fusedProbability` directly.
+
+**Bug 2 — BUY_NO Kelly used wrong probability (ALL THREE files):**
+All three Kelly implementations (`packages/cortex`, `apps/api/src/engine/cortex.ts`, `apps/api/src/services/cortex`) used `p = fusedProbability` for both BUY_YES and BUY_NO. But for BUY_NO, `p` should be `1 - fusedProbability` (probability of NO — the outcome being bet on). This caused BUY_NO positions to be **3x oversized**.
+
+Example: market at 0.70, CORTEX prob 0.60, BUY_NO direction:
+- **Before:** `p = 0.60`, Kelly quarter = 10.7% → oversized
+- **After:** `p = 0.40` (prob of NO), Kelly quarter = 3.6% → correct
+
+BUY_YES and BUY_NO with symmetric 10% edges now produce identical Kelly fractions (3.6%).
+
+**Bug 3 — EV not fee-adjusted (production cortex.ts):**
+`expectedValue = edgeMagnitude × confidence` didn't deduct fees. Changed to `expectedValue = netEdge × confidence` where `netEdge = edgeMagnitude - estimatedFee`. Uses Kalshi worst-case fee (7% of profit) as conservative estimate.
+
+**Files fixed:**
+- `apps/api/src/engine/cortex.ts` — BUY_NO Kelly fix + fee-adjusted EV (production path)
+- `packages/cortex/src/opportunity-scoring.ts` — fabricated winProb + BUY_NO + fee formula
+- `apps/api/src/services/cortex/opportunity-scoring.ts` — BUY_NO Kelly fix
+
+**Test results:**
+- BUY_YES (p=0.40, market=0.30): Kelly 3.6% ✅
+- BUY_NO (p_yes=0.60, market=0.70): Kelly 3.6% ✅ (was 10.7%)
+- Symmetry check: both 3.6% ✅
+- No-edge (p=market=0.50): Kelly 0% ✅
+- Fee deduction: 10% edge at 0.30 → 5.1% net edge after 4.9% Kalshi fee ✅

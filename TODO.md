@@ -734,6 +734,14 @@
 - [x] [FIX] Targeted cleanup: deleted 68 stale signals, 96 edges, 2 paper positions from 13 recategorized SPORTS markets. Preserved all non-recategorized market data. Arsenal/Schauffele signals cleared, POLITICS signals intact.
 - [x] [VERIFY] SPORTS-EDGE correctly routing on recategorized markets: FUTURES detected → null, other modules still processing.
 
+### Fix Kelly Criterion + Fee-Adjusted EV (2026-03-27 PM)
+
+- [x] [CRITICAL] Fixed BUY_NO Kelly using wrong probability in ALL THREE files. Was using `p = fusedProbability` (YES prob); now uses `p = 1 - fusedProbability` (NO prob — what we're betting on). BUY_NO positions were 3x oversized.
+- [x] [CRITICAL] Fixed fabricated `winProb = 0.5 + fusedConfidence * 0.3` in packages/cortex dead code. Now uses actual `fusedProbability`.
+- [x] [FIX] Added fee-adjusted EV to production cortex.ts: `netEdge = edgeMagnitude - kalshiFee` before multiplying by confidence.
+- [x] [FIX] Fixed Kalshi fee formula: was `0.07 × price × (1-price)`, now `0.07 × (1 - entryPrice)` per contract (7% of profit).
+- [x] [VERIFY] All manual tests pass: BUY_YES/BUY_NO symmetric Kelly, no-edge → 0%, fee deduction correct.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)

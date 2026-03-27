@@ -8,12 +8,12 @@
 export interface OpportunityScore {
   edgeMagnitude: number;        // |fair_value - market_price|
   edgeDirection: 'BUY_YES' | 'BUY_NO';
-  expectedValue: number;         // edge × confidence (what we expect to make per dollar)
+  expectedValue: number;         // net edge × confidence (what we expect to make per dollar)
   capitalEfficiency: number;     // EV / sqrt(days_to_resolution) — penalize long holds
-  feeDrag: number;               // estimated fee as % of edge
+  feeDrag: number;               // estimated round-trip fee as % of edge
   netEdge: number;               // edge - fees
   rank: number;                  // 1 = best opportunity
-  kellyFraction: number;         // optimal position size (fractional Kelly)
+  kellyFraction: number;         // optimal position size (quarter-Kelly)
   isActionable: boolean;         // passes minimum thresholds
   reasoning: string;
 }
@@ -35,17 +35,31 @@ const MIN_CONFIDENCE = 0.10;    // 10% minimum confidence
 const MIN_VOLUME = 100;         // $100 minimum volume
 
 /**
- * Calculate Kalshi fee: ceil(0.07 × contracts × price × (1-price))
+ * Kalshi fee: ceil(7% × profit) where profit = max(0, payout - cost).
+ *
+ * For a YES contract: cost = price, payout_if_win = 1.00
+ *   Entry fee = ceil(0.07 × max(0, 1.00 - price)) per contract
+ *   Exit fee  = ceil(0.07 × max(0, exit_price - 0)) per contract (selling)
+ *
+ * Simplified per-contract round-trip fee estimate at entry:
+ *   We assume exit at our fair value (fusedProbability), so:
+ *   entry_fee = 0.07 × (1 - entryPrice)   (profit on win)
+ *   exit_fee  ≈ 0.07 × exitPrice          (profit from selling)
+ *   But for sizing we just need a reasonable estimate, so use:
+ *   fee ≈ 0.07 × (1 - entryPrice) for entry side (conservative).
  */
-function kalshiFee(price: number): number {
-  return 0.07 * price * (1 - price);
+function kalshiFeeEstimate(entryPrice: number): number {
+  // Per-contract entry fee as fraction of notional
+  // Fee = 7% of potential profit = 7% × (1 - entryPrice)
+  // This is the fee per $1 contract at this price
+  return 0.07 * Math.max(0, 1 - entryPrice);
 }
 
 /**
- * Calculate Polymarket fee (taker): ~2% of notional
+ * Polymarket fee: ~2% taker fee on notional
  */
-function polymarketFee(price: number): number {
-  return 0.02 * price;
+function polymarketFee(entryPrice: number): number {
+  return 0.02 * entryPrice;
 }
 
 /**
@@ -54,39 +68,52 @@ function polymarketFee(price: number): number {
 export function scoreOpportunity(input: ScoringInput): OpportunityScore {
   const { fusedProbability, fusedConfidence, marketPrice, daysToResolution, platform, volume } = input;
 
-  // Edge calculation
+  // ── Edge calculation ──
   const rawEdge = fusedProbability - marketPrice;
   const edgeMagnitude = Math.abs(rawEdge);
   const edgeDirection: 'BUY_YES' | 'BUY_NO' = rawEdge > 0 ? 'BUY_YES' : 'BUY_NO';
 
-  // Fee calculation
-  const feeRate = platform === 'KALSHI' ? kalshiFee(marketPrice) : polymarketFee(marketPrice);
+  // ── Fee calculation ──
+  // Use correct entry price based on direction
+  const entryPrice = edgeDirection === 'BUY_YES' ? marketPrice : (1 - marketPrice);
+  const feeRate = platform === 'KALSHI' ? kalshiFeeEstimate(entryPrice) : polymarketFee(entryPrice);
   const feeDrag = edgeMagnitude > 0 ? feeRate / edgeMagnitude : 1;
   const netEdge = Math.max(0, edgeMagnitude - feeRate);
 
-  // Expected value = net edge × confidence
+  // ── Expected value = net edge × confidence ──
   const expectedValue = netEdge * fusedConfidence;
 
-  // Capital efficiency: penalize long-duration holds
-  // A 5% edge resolving in 3 days >> 5% edge resolving in 300 days
+  // ── Capital efficiency: penalize long-duration holds ──
   const daysClamp = Math.max(0.1, daysToResolution);
   const capitalEfficiency = expectedValue / Math.sqrt(daysClamp);
 
-  // Kelly criterion (quarter-Kelly for safety)
-  // f* = (p × b - q) / b where b = odds, p = win prob, q = 1-p
-  const winProb = 0.5 + fusedConfidence * 0.3; // rough win rate estimate
-  const odds = 1 / marketPrice - 1; // if buying YES at marketPrice
-  const kellyFull = Math.max(0, (winProb * odds - (1 - winProb)) / odds);
-  const kellyFraction = kellyFull * 0.25; // quarter-Kelly
+  // ── Kelly criterion ──
+  // f* = (p × b - q) / b
+  // p = fusedProbability (our estimated true probability)
+  // q = 1 - p
+  // b = net odds = (payout / cost) - 1
+  //
+  // For BUY_YES at marketPrice: cost = marketPrice, payout = 1.0
+  //   b = (1 - marketPrice) / marketPrice
+  //   p = fusedProbability (prob of YES — what we're betting on)
+  // For BUY_NO at marketPrice: cost = (1 - marketPrice), payout = 1.0
+  //   b = marketPrice / (1 - marketPrice)
+  //   p = 1 - fusedProbability (prob of NO — what we're betting on)
+  const p = edgeDirection === 'BUY_YES' ? fusedProbability : (1 - fusedProbability);
+  const q = 1 - p;
+  const betPrice = edgeDirection === 'BUY_YES' ? marketPrice : (1 - marketPrice);
+  const b = betPrice > 0.001 && betPrice < 0.999 ? (1 / betPrice - 1) : 0;
+  const kellyFull = b > 0 ? (p * b - q) / b : 0;
+  const kellyFraction = Math.max(0, kellyFull * 0.25); // quarter-Kelly, clamped to ≥ 0
 
-  // Actionability check
+  // ── Actionability check ──
   const isActionable = edgeMagnitude >= MIN_EDGE
     && expectedValue >= MIN_EV
     && fusedConfidence >= MIN_CONFIDENCE
     && volume >= MIN_VOLUME
     && netEdge > 0;
 
-  // Reasoning
+  // ── Reasoning ──
   const parts: string[] = [];
   if (edgeMagnitude < MIN_EDGE) parts.push(`edge ${(edgeMagnitude * 100).toFixed(1)}% < ${MIN_EDGE * 100}% min`);
   if (fusedConfidence < MIN_CONFIDENCE) parts.push(`confidence ${(fusedConfidence * 100).toFixed(0)}% < ${MIN_CONFIDENCE * 100}% min`);

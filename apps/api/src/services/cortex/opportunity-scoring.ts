@@ -41,8 +41,10 @@ export function scoreOpportunity(input: ScoringInput): ScoredOpportunity {
   const capitalEfficiencyScore = edgeMagnitude / Math.sqrt(safeDays);
 
   // Kelly criterion: fraction of bankroll to bet
-  // f* = (p * b - q) / b where p = our probability, q = 1-p, b = odds
-  const p = cortexProbability;
+  // f* = (p * b - q) / b where p = prob of outcome we're betting on, q = 1-p, b = odds
+  // BUY_YES: p = cortexProbability (prob of YES — what we're betting on)
+  // BUY_NO:  p = 1 - cortexProbability (prob of NO — what we're betting on)
+  const p = edgeDirection === 'BUY_YES' ? cortexProbability : (1 - cortexProbability);
   const q = 1 - p;
   const entryPrice = edgeDirection === 'BUY_YES' ? marketPrice : 1 - marketPrice;
   const b = (1 - entryPrice) / entryPrice; // payout odds
