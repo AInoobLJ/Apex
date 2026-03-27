@@ -668,6 +668,13 @@
 - [x] [FIX] Fixed `POST /system/recategorize-markets`: now uses `reclassifyMarket(title, currentCategory)` instead of `detectCategory(title)` without platform category. Preserves platform-assigned categories (e.g. Kalshi `crypto`).
 - [x] [FIX] Recategorization: 850 SPORTS→POLITICS, 572 POLITICS→SPORTS recovered, 4 SPORTS→CULTURE. 13/13 edge case tests pass.
 
+### Store rawPlatformCategory Column (2026-03-26 PM)
+
+- [x] [FIX] Added `rawPlatformCategory String?` to Market Prisma model — stores exact category string from Kalshi/Polymarket API (e.g., `"elections"`, `"crypto"`, `"pop-culture"`).
+- [x] [FIX] Updated NormalizedMarket interface, kalshi-client.ts, polymarket-client.ts, market-sync.ts to pass and store `rawPlatformCategory`.
+- [x] [FIX] `POST /system/recategorize-markets` now uses stored `rawPlatformCategory` with `detectCategory(title, description, rawPlatformCategory)` — no more loss of platform categories during recategorization.
+- [x] [FIX] Migration: `prisma db push` added nullable column. Populates on next market-sync as markets are upserted.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)

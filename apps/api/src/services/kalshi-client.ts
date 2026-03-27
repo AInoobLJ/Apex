@@ -222,6 +222,7 @@ export class KalshiClient implements PredictionMarketAdapter {
       title: raw.title,
       description: raw.description ?? null,
       category,
+      rawPlatformCategory: k.category || null,
       status: k.result ? 'RESOLVED' : 'ACTIVE',
       resolutionText: k.rules_primary || null,
       resolutionSource: null,

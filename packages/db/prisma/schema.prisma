@@ -66,13 +66,14 @@ enum ArbStatus {
 // ─── Markets ─────────────────────────────────────────
 
 model Market {
-  id                String         @id @default(cuid())
-  platform          Platform
-  platformMarketId  String
-  title             String
-  description       String?
-  category          MarketCategory
-  status            MarketStatus
+  id                   String         @id @default(cuid())
+  platform             Platform
+  platformMarketId     String
+  title                String
+  description          String?
+  category             MarketCategory
+  rawPlatformCategory  String?        // Exact category string from Kalshi/Polymarket API
+  status               MarketStatus
   resolutionText    String?
   resolutionSource  String?
   resolutionDate    DateTime?

@@ -45,6 +45,7 @@ export interface NormalizedMarket {
   title: string;
   description: string | null;
   category: MarketCategory;
+  rawPlatformCategory?: string | null; // Exact string from Kalshi/Polymarket API
   status: 'ACTIVE' | 'CLOSED' | 'RESOLVED' | 'SUSPENDED';
   resolutionText: string | null;
   resolutionSource: string | null;

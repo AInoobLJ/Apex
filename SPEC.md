@@ -2999,3 +2999,20 @@ The `buildActionabilitySummary()` now reports confidence failures explicitly (e.
 - "New Rihanna Album before GTA VI?" → CULTURE
 - "Will LeBron James win the 2028 US Presidential Election?" → POLITICS
 - "Will LeBron James win the 2025-2026 NBA MVP?" → SPORTS
+
+### V2.22 Store rawPlatformCategory for Reliable Recategorization (2026-03-26 PM)
+
+**Problem:** Recategorization couldn't re-apply platform categories because we didn't store the raw category string from Kalshi/Polymarket. Markets that lost their platform-assigned category (e.g., Kalshi `"crypto"`) during a recategorize run couldn't be recovered without re-fetching from the API.
+
+**Fix:** Added `rawPlatformCategory String?` column to the `Market` Prisma model. Stores the exact category string from the platform API (e.g., `"elections"`, `"crypto"`, `"us-current-affairs"`, `"pop-culture"`).
+
+**Changes:**
+- `packages/db/prisma/schema.prisma`: Added `rawPlatformCategory String?` to Market model
+- `packages/shared/src/platform-adapter.ts`: Added `rawPlatformCategory?: string | null` to NormalizedMarket interface
+- `apps/api/src/services/kalshi-client.ts`: Passes `k.category` as `rawPlatformCategory`
+- `apps/api/src/services/polymarket-client.ts`: Passes `gamma.category` as `rawPlatformCategory`
+- `apps/api/src/services/market-sync.ts`: Stores `rawPlatformCategory` in create/update
+- `apps/api/src/routes/system.ts`: `POST /system/recategorize-markets` now uses stored `rawPlatformCategory` with `detectCategory(title, description, rawPlatformCategory)` instead of keyword-only detection
+- Migration: `prisma db push` added nullable column (no data loss)
+
+**Data flow:** Column starts null for all 13,171 existing markets. Next market-sync (every 5 min) populates it as markets are upserted from Kalshi/Polymarket. Future recategorization runs will always have the platform's original category available.

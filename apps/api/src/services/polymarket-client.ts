@@ -144,6 +144,7 @@ export class PolymarketClient implements PredictionMarketAdapter {
       title: gamma.question,
       description: gamma.description || null,
       category,
+      rawPlatformCategory: gamma.category || null,
       status: gamma.active ? 'ACTIVE' : gamma.closed ? 'CLOSED' : 'SUSPENDED',
       resolutionText: null,
       resolutionSource: null,
