@@ -658,6 +658,16 @@
 - [x] [FIX] Update SPORTS-EDGE prompt: `bookmakerImpliedProb` is most important feature. Instructions to extract implied probability from moneyline odds and use ESPN data for injuries/standings/form.
 - [x] [VERIFY] End-to-end test: Hornets vs Knicks → bookmakerImpliedProb 0.985, recentFormLast10 0.7, injuryImpact 0.08, homeAway 1. Data sources: The Odds API + ESPN Schedule + ESPN Injury Report.
 
+### Category Detection: High-Confidence Keyword Overrides (2026-03-26 PM)
+
+- [x] [FIX] CRITICAL: Political keywords now override ALL other signals (Tier 0). "Chelsea Clinton Democratic presidential nomination?" → POLITICS, not SPORTS. `POLITICS_OVERRIDE` regex checked before platform category and sports patterns.
+- [x] [FIX] Same for finance (`fed`, `fomc`, `tariff`, `gdp`) and crypto (`bitcoin`, `ethereum`, `blockchain`) — override everything.
+- [x] [FIX] Removed ambiguous team names (`chelsea`, `cardinals`, `kings`, `panthers`, `hurricanes`) from top-level sports regex. Now only unambiguous league names (NBA, NFL, EPL) trigger sports. Full team name matching runs after politics/finance/crypto.
+- [x] [FIX] Added CULTURE patterns: `gta`, `video game`, `playstation`, `xbox`, `released before`. "GTA VI released before June 2026?" → CULTURE.
+- [x] [FIX] SPORTS recovery in `reclassifyMarket`: unambiguous league names (NBA, NFL, etc.) rescue markets wrongly tagged by previous bad runs. "LeBron James 2025-2026 NBA MVP?" recovered from POLITICS → SPORTS.
+- [x] [FIX] Fixed `POST /system/recategorize-markets`: now uses `reclassifyMarket(title, currentCategory)` instead of `detectCategory(title)` without platform category. Preserves platform-assigned categories (e.g. Kalshi `crypto`).
+- [x] [FIX] Recategorization: 850 SPORTS→POLITICS, 572 POLITICS→SPORTS recovered, 4 SPORTS→CULTURE. 13/13 edge case tests pass.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)

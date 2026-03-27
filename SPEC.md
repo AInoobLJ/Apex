@@ -2973,3 +2973,29 @@ The `buildActionabilitySummary()` now reports confidence failures explicitly (e.
 - ESPN: Hornets 38-34 record, 7-3 last 10, 2 rest days, McNeeley/Salaun out
 - Agent extracted: `bookmakerImpliedProb: 0.985`, `recentFormLast10: 0.7`, `injuryImpact: 0.08`, `homeAway: 1`
 - `dataSourcesUsed`: The Odds API, ESPN Schedule, ESPN Injury Report
+
+### V2.21 Category Detection: High-Confidence Keyword Overrides (2026-03-26 PM)
+
+**Problem:** "Chelsea Clinton win 2028 Democratic presidential nomination?" tagged SPORTS because `chelsea` matched the Chelsea FC regex before political keywords were checked. "GTA VI" markets tagged SPORTS via cascading misclassification. Root cause: sports team names (Chelsea, Cardinals, Kings, Panthers) are also common words/names, and sports patterns were checked before politics.
+
+**Fix: Three-tier detection priority** (`category-detector.ts`, `category-classifier.ts`):
+
+1. **Tier 0 — High-confidence keyword overrides** (NEW): Political keywords (`election`, `president`, `nomination`, `democrat`, `republican`, `ceasefire`, `sanctions`, etc.), finance keywords (`fed`, `fomc`, `tariff`, `gdp`), and crypto keywords (`bitcoin`, `ethereum`, `blockchain`) override ALL other signals including platform category. These terms are never ambiguous.
+
+2. **Tier 1 — Platform category**: Kalshi `event.category` / Polymarket `market.category` mapped via `PLATFORM_CATEGORY_MAP`. Preserved unless overridden by Tier 0.
+
+3. **Tier 2 — Keyword fallback**: Sports league names (NBA, NFL, EPL), game mechanics (touchdowns, rebounds), team names. Sports team name matching now runs AFTER politics/finance/crypto overrides, preventing false positives.
+
+**Additional fixes:**
+- Added CULTURE patterns for games/entertainment (`gta`, `video game`, `playstation`, `released before`).
+- Added SPORTS recovery in `reclassifyMarket`: if market has unambiguous league names (NBA, NFL, etc.) but is tagged wrong (e.g. POLITICS from a bad run), correct it. Only fires on league names, NOT ambiguous team names.
+- Fixed `POST /system/recategorize-markets`: now uses `reclassifyMarket(title, currentCategory)` instead of `detectCategory(title)` without platform category. Preserves platform-assigned categories.
+- Recategorization results: 850 SPORTS→POLITICS (Chelsea Clinton, etc.), 572 POLITICS→SPORTS recovered (NBA MVP, etc.), 4 SPORTS→CULTURE (GTA VI, Rihanna).
+
+**Test results (13/13 pass):**
+- "Chelsea Clinton Democratic presidential nomination" → POLITICS
+- "Chelsea vs Arsenal EPL match" → SPORTS
+- "Russia-Ukraine Ceasefire before GTA VI?" → POLITICS
+- "New Rihanna Album before GTA VI?" → CULTURE
+- "Will LeBron James win the 2028 US Presidential Election?" → POLITICS
+- "Will LeBron James win the 2025-2026 NBA MVP?" → SPORTS

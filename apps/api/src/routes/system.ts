@@ -31,21 +31,24 @@ export default async function systemRoutes(fastify: FastifyInstance) {
     return { queues };
   });
 
-  // POST /system/recategorize-markets — re-run category detection on all markets
+  // POST /system/recategorize-markets — apply high-confidence overrides + reclassify OTHER
+  // Does NOT re-detect from scratch (we don't store raw platformCategory).
+  // Instead: applies reclassifyMarket() to current category, which:
+  //   1. Overrides ANY category with high-confidence keywords (politics/finance/crypto)
+  //   2. Reclassifies OTHER markets via broader pattern matching
+  // Platform-assigned categories (e.g., Kalshi "crypto") are preserved unless overridden.
   fastify.post('/system/recategorize-markets', async () => {
-    const { detectCategory } = await import('../services/category-detector');
     const { reclassifyMarket } = await import('../services/category-classifier');
 
     const markets = await prisma.market.findMany({
-      select: { id: true, title: true, description: true, category: true },
+      select: { id: true, title: true, category: true },
     });
 
     const changes: Record<string, { from: string; to: string; count: number }> = {};
     let updated = 0;
 
     for (const m of markets) {
-      const detected = detectCategory(m.title, m.description);
-      const newCategory = reclassifyMarket(m.title, detected);
+      const newCategory = reclassifyMarket(m.title, m.category);
 
       if (newCategory !== m.category) {
         const key = `${m.category} → ${newCategory}`;
