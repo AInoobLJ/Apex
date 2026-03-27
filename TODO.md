@@ -508,7 +508,8 @@
 - [x] [v2] Implement FRED economic data source (`apps/api/src/services/data-sources/fred.ts`)
 - [x] [v2] Implement Congressional data source (`apps/api/src/services/data-sources/congress.ts`)
 - [x] [v2] Implement Polling data source (`apps/api/src/services/data-sources/polling.ts`)
-- [x] [v2] Implement The Odds API data source (`apps/api/src/services/data-sources/odds-api.ts`) — SPORTS-EDGE context provider
+- [x] [v2] Implement The Odds API data source (`apps/api/src/services/data-sources/odds-api.ts`) — SPORTS-EDGE context provider (1hr cache, team-name sport detection)
+- [x] [v2] Implement ESPN public API data source (`apps/api/src/services/data-sources/espn-data.ts`) — injuries, standings, team schedule (no API key needed)
 - [x] [v2] Implement Finnhub + OpenFDA data source (`apps/api/src/services/data-sources/finnhub.ts`) — CORPORATE-INTEL context provider
 
 ### Additional Jobs & Services
@@ -642,6 +643,19 @@
 - [x] [FIX] Paper position and reconciliation jobs: VERIFIED running every 5 min in maintenance queue. `paper-position-update` updates prices + P&L, `position-reconciliation` closes resolved markets. Both registered in queue.ts and handled in workers.ts.
 - [x] [FIX] LLM cost controls: budget lowered from $25/day to $5/day. HARD_LIMIT in `llm-budget-tracker.ts` lowered from $20 to $5. `LLM_DAILY_BUDGET` in .env set to 5.00. Previous day was $25.47 — mostly from 14K SCREEN_MARKET calls ($20.87). Budget will enforce $5/day cap starting midnight UTC.
 - [x] [FIX] Worker restarted with all code changes. All RESEARCH modules online: COGEX, FLOWEX, LEGEX, DOMEX, ALTEX, REFLEX + SPEED pipeline (SPEEDEX, FLOWEX) running 30s cycle with 0 paper positions (disabled).
+
+### SPORTS-EDGE: The Odds API + ESPN + Bookmaker Baseline (2026-03-26 PM)
+
+- [x] [FIX] Configure `ODDS_API_KEY=c0bae8...` in `.env`. Verified: 500 requests remaining, NBA/MLB/NHL/NFL odds returning correctly.
+- [x] [FIX] Fix odds-api.ts response field mapping: API returns `home_team`/`away_team` (snake_case), not `homeTeam` (camelCase). Team matching was silently failing.
+- [x] [FIX] Add 1-hour in-memory cache per sport key to odds-api.ts. Free tier is 500 req/month — uncached would exceed in 2-3 days.
+- [x] [FIX] Add team-name-based sport detection to odds-api.ts: 120+ team names across NBA/NFL/MLB/NHL. "Will the Hornets beat the Knicks?" now detects as `basketball_nba` even without "NBA" keyword.
+- [x] [NEW] Create `espn-data.ts`: ESPN public API (no key required) for injuries, standings, team schedules. Static team ID maps for 4 major leagues. 2h/12h cache TTL.
+- [x] [FIX] Update sports-edge.ts contextProvider: calls The Odds API + ESPN in parallel. `requireContext: true` passes if EITHER source returns data.
+- [x] [FIX] Add `bookmakerImpliedProb` to `SportsEdgeFeatures` with weight 3.0 (highest). Bookmaker consensus is the baseline; other features (home/away, form, injuries) are adjustments. NaN default when no odds → silently skipped.
+- [x] [FIX] Reduce other sports weights: homeAway 0.15→0.10, recentForm 0.8→0.5, injuryImpact -0.6→-0.4. Bookmaker line already prices most of these factors.
+- [x] [FIX] Update SPORTS-EDGE prompt: `bookmakerImpliedProb` is most important feature. Instructions to extract implied probability from moneyline odds and use ESPN data for injuries/standings/form.
+- [x] [VERIFY] End-to-end test: Hornets vs Knicks → bookmakerImpliedProb 0.985, recentFormLast10 0.7, injuryImpact 0.08, homeAway 1. Data sources: The Odds API + ESPN Schedule + ESPN Injury Report.
 
 ### Discussed But Not Built
 

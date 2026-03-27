@@ -2501,7 +2501,7 @@ Previous architecture asked Claude to estimate probabilities directly (anchoring
 | FED-HAWK | FINANCE | FRED (CPI, PCE, unemployment, yields, breakeven inflation, claims, sentiment), CME FedWatch | questionType, cpiTrend, laborMarketTightness, fedCommunicationTone, recentDataSurprise, cmeCutProbability, geopoliticalRisk, financialStress |
 | GEO-INTEL | POLITICS | Polling data, Congress.gov (with `estimatePassageProbability()` base rates) | questionType, pollingSpread, pollingTrend, incumbentRunning, billStage, cosponsorCount, bipartisanSupport, conflictIntensity, escalationTrend |
 | CRYPTO-ALPHA | CRYPTO | Binance WebSocket (live prices, 24h change, volume, funding rates) | priceVs30dAvg, fundingRate, exchangeNetFlow, protocolTVLTrend, majorUpgrade, regulatoryAction |
-| SPORTS-EDGE | SPORTS | The Odds API (the-odds-api.com, free tier 500 req/month) — live odds, spreads, team matchups | homeAway, restDays, injuryImpact, recentFormLast10, headToHeadRecord, playoffVsRegular, sport |
+| SPORTS-EDGE | SPORTS | The Odds API (the-odds-api.com, 500 req/month, 1hr cache) + ESPN public API (free, no key) — live odds, injuries, standings, schedule | **bookmakerImpliedProb**, homeAway, restDays, injuryImpact, recentFormLast10, headToHeadRecord, lineMovement, sport |
 | WEATHER-HAWK | SCIENCE | NWS API (api.weather.gov, free) | forecastLeadDays, forecastConfidence, nwsForecastAvailable, forecastedCondition, forecastedTempF, climatologicalBaseRate, modelAgreement |
 | LEGAL-EAGLE | POLITICS | CourtListener API (free, courtlistener.com) | caseType, courtLevel, oralArgumentHeld, questionPresented, circuitSplitExists, historicalReverseRate, proceduralStage |
 | CORPORATE-INTEL | FINANCE | Finnhub (finnhub.io, free tier 60 calls/min) — earnings dates, analyst estimates, SEC filings; OpenFDA API (free) — FDA approval tracking | eventType, earningsSurpriseHistory, revenueGrowthTrend, analystConsensus, sectorMomentum, insiderActivity, regulatoryRisk |
@@ -2572,7 +2572,7 @@ Paper positions now subtract estimated fees at both entry AND exit to make P&L r
 | FED-HAWK | FRED | `FRED_API_KEY` | Unlimited |
 | GEO-INTEL | Congress.gov | `CONGRESS_API_KEY` | Unlimited |
 | CRYPTO-ALPHA | None (Binance WS) | `BINANCE_WS_ENABLED` | Unlimited |
-| SPORTS-EDGE | The Odds API | `ODDS_API_KEY` | 500 req/month |
+| SPORTS-EDGE | The Odds API + ESPN | `ODDS_API_KEY` | 500 req/month (1hr cache) + unlimited ESPN |
 | WEATHER-HAWK | None (NWS) | N/A | Unlimited |
 | LEGAL-EAGLE | None (CourtListener) | N/A | Rate limited |
 | CORPORATE-INTEL | Finnhub + OpenFDA | `FINNHUB_API_KEY` | 60 calls/min |
@@ -2918,3 +2918,53 @@ The `buildActionabilitySummary()` now reports confidence failures explicitly (e.
 - Adaptive rate limiting: 100 calls/hr normal → 50 at 50% budget → 10 at 80%.
 
 **6. Worker restart:** All RESEARCH modules confirmed online (COGEX, FLOWEX, LEGEX, DOMEX, ALTEX, REFLEX). Speed pipeline running with 0 paper positions (disabled). Paper-position-update and position-reconciliation jobs verified running every 5 minutes.
+
+### V2.20 SPORTS-EDGE: The Odds API + ESPN Data + Bookmaker Baseline (2026-03-26 PM)
+
+**Problem:** SPORTS-EDGE was returning null because `ODDS_API_KEY` was empty. Even when configured, the agent had no injury data, standings, or team form — just bookmaker odds. And the feature model treated all features equally instead of anchoring to bookmaker consensus.
+
+**1. The Odds API Integration** (`odds-api.ts`):
+- Configured `ODDS_API_KEY` in `.env` (free tier: 500 req/month).
+- Fixed response field mapping: API returns `home_team`/`away_team` (snake_case), not `homeTeam` (camelCase).
+- Added 1-hour in-memory cache per sport key to stay within free tier limits.
+- Added team-name-based sport detection: if title contains "Hornets" → `basketball_nba`, even without explicit "NBA" keyword. Covers 120+ team names across NBA, NFL, MLB, NHL.
+- Added over/under data extraction alongside moneyline and spread.
+
+**2. ESPN Public API Integration** (NEW: `espn-data.ts`):
+- No API key required — free public endpoints.
+- Three data sources:
+  - **Injuries**: `site.api.espn.com/apis/site/v2/sports/{sport}/{league}/injuries` — key player status (Out, Day-To-Day, Questionable)
+  - **Standings**: `site.api.espn.com/apis/site/v2/sports/{sport}/{league}/standings` — W-L record, home/away splits, streak
+  - **Team Schedule**: `site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams/{id}/schedule` — last 10 game results, rest days, recent form percentage
+- Static team ID maps for NBA (30), NFL (32), MLB (30), NHL (32) teams.
+- In-memory cache: 2h TTL for injuries, 12h for standings, 2h for schedule.
+- Team-name-based sport detection matching same pattern as odds-api.
+
+**3. SPORTS-EDGE Context Provider** (`sports-edge.ts`):
+- Calls both `getSportsOdds()` and `getEspnData()` in parallel via `Promise.allSettled`.
+- Merges context strings from both sources.
+- `requireContext: true` passes if EITHER source returns data (ESPN alone is sufficient).
+
+**4. Bookmaker-Implied Probability as Baseline** (`feature-model.ts`, `domex.ts`, prompt):
+- Added `bookmakerImpliedProb` to `SportsEdgeFeatures` interface.
+- Default weight: `3.0` (highest sports feature — this is the anchor).
+- Other sports weights reduced to act as adjustments around the bookmaker line:
+  - `homeAway`: 0.15 → 0.10 (bookmaker already prices home advantage)
+  - `recentForm`: 0.8 → 0.5 (bookmaker already factors form)
+  - `injuryImpact`: -0.6 → -0.4 (bookmakers react fast to injury news)
+  - `lineMovement`: 0.4 → 0.3
+  - `headToHeadRecord`: 0.3 → 0.2
+- When no odds available, `bookmakerImpliedProb` defaults to `NaN` → silently skipped by `flattenFeatures` (no bias).
+- Prompt instructs agent to extract implied probability from moneyline odds: e.g., DraftKings +300 → 100/(300+100) = 0.25.
+
+**5. SPORTS-EDGE Prompt Update** (`domex-sports-edge.md`):
+- Added `bookmakerImpliedProb` as most important required feature.
+- Added instructions to use ESPN data for `restDays`, `injuryImpact`, `recentFormLast10`.
+- Added base rate note: "Bookmaker lines are well-calibrated — use them as your baseline."
+
+**6. Verified End-to-End:**
+- Test: "Will the Charlotte Hornets beat the New York Knicks?"
+- Odds API: Hornets -6500 (98.5% implied), Knicks +1725, spread -11.5
+- ESPN: Hornets 38-34 record, 7-3 last 10, 2 rest days, McNeeley/Salaun out
+- Agent extracted: `bookmakerImpliedProb: 0.985`, `recentFormLast10: 0.7`, `injuryImpact: 0.08`, `homeAway: 1`
+- `dataSourcesUsed`: The Odds API, ESPN Schedule, ESPN Injury Report

@@ -164,6 +164,9 @@ export class DomexModule extends SignalModule {
             headToHeadRecord: toNum(f.headToHeadRecord, 0.5),
             eloRating: toNum(f.eloRating, 1500),
             lineMovement: toNum(f.lineMovement, 0),
+            // NaN default: when bookmaker odds are unavailable, the feature is silently
+            // skipped by flattenFeatures (line 270: isNaN check). No bias when missing.
+            bookmakerImpliedProb: toNum(f.bookmakerImpliedProb, NaN),
           };
           break;
 

@@ -1,11 +1,12 @@
 import { createDomexAgent } from './base-agent';
 import { getSportsOdds } from '../../services/data-sources/odds-api';
-import { logger } from '../../lib/logger';
+import { getEspnData } from '../../services/data-sources/espn-data';
 
 /**
- * SPORTS-EDGE: requires real odds data from The Odds API.
- * If THE_ODDS_API_KEY is not set or the API returns no data for this market,
- * the agent returns null (no signal) instead of guessing with hallucinated features.
+ * SPORTS-EDGE: requires real data from The Odds API and/or ESPN.
+ * If BOTH sources return no data, the agent returns null (no signal).
+ * Either source alone is sufficient — ESPN provides injuries/standings/form,
+ * The Odds API provides bookmaker-implied probabilities and line movement.
  */
 export const sportsEdgeAgent = createDomexAgent({
   name: 'SPORTS-EDGE',
@@ -13,9 +14,25 @@ export const sportsEdgeAgent = createDomexAgent({
   categories: ['SPORTS'],
   task: 'DOMEX_FEATURE_EXTRACT',
   contextProvider: async (title, description) => {
-    return getSportsOdds(title, description);
+    const [odds, espn] = await Promise.allSettled([
+      getSportsOdds(title, description),
+      getEspnData(title, description),
+    ]);
+
+    const oddsResult = odds.status === 'fulfilled' ? odds.value : { context: '', freshness: 'none' as const, sources: [] };
+    const espnResult = espn.status === 'fulfilled' ? espn.value : { context: '', freshness: 'none' as const, sources: [] };
+
+    const context = [oddsResult.context, espnResult.context].filter(Boolean).join('\n\n');
+    const sources = [...oddsResult.sources, ...espnResult.sources];
+    const freshness = oddsResult.freshness === 'live' || espnResult.freshness === 'live'
+      ? 'live' as const
+      : oddsResult.freshness !== 'none' || espnResult.freshness !== 'none'
+        ? 'cached' as const
+        : 'none' as const;
+
+    return { context, freshness, sources };
   },
-  // SAFETY: Agent must not run without real odds data.
+  // SAFETY: Agent must not run without real data from at least one source.
   // Without this gate, the LLM hallucinates features (e.g. "62% Schauffele").
   requireContext: true,
 });

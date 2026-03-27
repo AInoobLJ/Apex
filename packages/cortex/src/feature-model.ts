@@ -34,6 +34,7 @@ export interface SportsEdgeFeatures {
   headToHeadRecord: number;       // historical win rate vs opponent
   eloRating: number;              // team Elo or equivalent
   lineMovement: number;           // -1 to 1, sharp money direction
+  bookmakerImpliedProb: number;   // 0-1, consensus implied probability from bookmaker odds
 }
 
 export interface CryptoAlphaFeatures {
@@ -158,13 +159,14 @@ const DEFAULT_WEIGHTS: ModelWeights = {
     'cryptoAlpha.exchangeFlows': -0.2,
     'cryptoAlpha.volatilityRatio': -0.15,
     'cryptoAlpha.regulatoryNews': 0.25,
-    // Sports
-    'sportsEdge.homeAway': 0.15,
-    'sportsEdge.recentForm': 0.8,
-    'sportsEdge.injuryImpact': -0.6,
-    'sportsEdge.eloRating': 0.001,
-    'sportsEdge.lineMovement': 0.4,
-    'sportsEdge.headToHeadRecord': 0.3,
+    // Sports — bookmakerImpliedProb is the primary anchor; other features are adjustments
+    'sportsEdge.bookmakerImpliedProb': 3.0,   // HIGH: anchor to bookmaker consensus (DK/FD/etc.)
+    'sportsEdge.homeAway': 0.10,              // reduced: bookmaker line already prices home advantage
+    'sportsEdge.recentForm': 0.5,             // reduced: bookmaker line already factors form
+    'sportsEdge.injuryImpact': -0.4,          // reduced: bookmakers react fast to injury news
+    'sportsEdge.eloRating': 0.001,            // unchanged: minimal standalone value
+    'sportsEdge.lineMovement': 0.3,           // reduced slightly
+    'sportsEdge.headToHeadRecord': 0.2,       // reduced: small H2H effect
     // WeatherHawk
     'weatherHawk.temperatureAnomaly': 0.2,
     'weatherHawk.precipitationChance': 0.15,
