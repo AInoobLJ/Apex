@@ -3164,3 +3164,28 @@ The architecture already handles this correctly because:
 - 3 SPORTS edges created: Arsenal CL 3.8%, PSG CL 3.4%, Real Madrid CL 0.2%
 - Confidence appropriately low (5-6%) because fewer modules contributed
 - SPORTS-EDGE correctly did not contaminate these with match odds
+
+### V2.28 start-all.sh — Resilient Process Management (2026-03-27 PM)
+
+**Problem:** API server and dashboard keep dying between Claude Code sessions. The worker survives because it has `start-worker.sh` with auto-restart, but the API server (started via Claude Preview) gets killed on session restart.
+
+**Root cause:** API was managed by Claude Preview (`launch.json`), which sends SIGTERM when the preview server restarts. The worker survived because it runs via `start-worker.sh` (independent `nohup` process).
+
+**Fix:** Created `start-all.sh` — a single script that starts and monitors all three services:
+
+| Feature | Implementation |
+|---------|---------------|
+| Auto-restart on crash | Monitor loop checks process liveness every 5s, restarts dead processes |
+| API health check | Curls `/api/v1/system/health` every 60s, restarts if unresponsive |
+| Port conflict handling | Kills existing processes on ports 3001/5173 before starting |
+| Clean shutdown | Traps SIGTERM/SIGINT/SIGHUP, kills all children |
+| Logging | Separate log files: api.log, worker.log, dashboard.log, all.log |
+| PID file | `/tmp/apex-all.pid` for easy `kill $(cat /tmp/apex-all.pid)` |
+| Stale process cleanup | Kills existing worker/start-worker.sh before starting fresh |
+
+**Usage:**
+```bash
+./start-all.sh              # foreground (Ctrl+C to stop all)
+nohup ./start-all.sh &      # background (survives terminal close)
+kill $(cat /tmp/apex-all.pid)  # stop all from another terminal
+```

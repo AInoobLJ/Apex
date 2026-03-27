@@ -720,6 +720,12 @@
 - [x] [VERIFY] Live data confirms: Champions League FUTURES → 6 signals from ALTEX+LEGEX, 3 edges created (Arsenal 3.8%, PSG 3.4%, Real Madrid 0.2%). Confidence appropriately low (5-6%). No match-odds contamination.
 - [x] [VERIFY] No code changes needed — pipeline architecture was already correct.
 
+### start-all.sh — Resilient Process Management (2026-03-27 PM)
+
+- [x] [NEW] Created `start-all.sh`: starts API + worker + dashboard with auto-restart, health checks, port conflict handling, SIGTERM trap, and separate log files.
+- [x] [FIX] Root cause of API crashes: Claude Preview sends SIGTERM on session restart. `start-all.sh` runs independently of Claude Preview.
+- [x] [VERIFY] All 8 dashboard pages load: Markets (19,689), Edges (17), Portfolio ($10K/4 paper positions), System, Crypto, Execution, Backtest, Settings.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)
