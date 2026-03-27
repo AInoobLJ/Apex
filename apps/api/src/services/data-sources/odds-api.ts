@@ -284,15 +284,18 @@ async function fetchOddsCached(sport: string, apiKey: string): Promise<OddsData[
   }
 
   const axios = require('axios');
-  const resp = await axios.get(`${ODDS_API_BASE}/sports/${sport}/odds`, {
-    params: {
-      apiKey,
-      regions: 'us',
-      markets: 'h2h,spreads,totals',
-      oddsFormat: 'american',
-    },
-    timeout: 10000,
-  });
+  const { oddsApiBreaker } = require('../../lib/circuit-breaker');
+  const resp = await oddsApiBreaker.execute(() =>
+    axios.get(`${ODDS_API_BASE}/sports/${sport}/odds`, {
+      params: {
+        apiKey,
+        regions: 'us',
+        markets: 'h2h,spreads,totals',
+        oddsFormat: 'american',
+      },
+      timeout: 10000,
+    })
+  );
 
   const games: OddsData[] = resp.data || [];
   oddsCache.set(sport, { games, fetchedAt: Date.now() });

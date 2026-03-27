@@ -83,8 +83,11 @@ export class PolymarketClient implements PredictionMarketAdapter {
   private clobClient: AxiosInstance;
   private gammaLimiter: Bottleneck;
   private clobLimiter: Bottleneck;
+  private breaker: any; // circuit breaker
 
   constructor() {
+    const { polymarketBreaker } = require('../lib/circuit-breaker');
+    this.breaker = polymarketBreaker;
     this.gammaClient = axios.create({
       baseURL: config.POLYMARKET_GAMMA_URL,
       timeout: 30000,
@@ -250,8 +253,10 @@ export class PolymarketClient implements PredictionMarketAdapter {
 
       const start = Date.now();
       try {
-        const response = await this.gammaLimiter.schedule(() =>
-          this.gammaClient.get<PolymarketGammaMarket[]>('/markets', { params })
+        const response = await this.breaker.execute(() =>
+          this.gammaLimiter.schedule(() =>
+            this.gammaClient.get<PolymarketGammaMarket[]>('/markets', { params })
+          )
         );
 
         await logApiUsage({
@@ -308,8 +313,10 @@ export class PolymarketClient implements PredictionMarketAdapter {
 
       const start = Date.now();
       try {
-        const response = await this.gammaLimiter.schedule(() =>
-          this.gammaClient.get<PolymarketGammaMarket[]>('/markets', { params })
+        const response = await this.breaker.execute(() =>
+          this.gammaLimiter.schedule(() =>
+            this.gammaClient.get<PolymarketGammaMarket[]>('/markets', { params })
+          )
         );
 
         await logApiUsage({

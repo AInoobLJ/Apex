@@ -68,12 +68,17 @@ export class KalshiClient implements PredictionMarketAdapter {
   readonly platform = 'KALSHI' as const;
   private client: AxiosInstance;
   private limiter: Bottleneck;
+  private breaker: any; // circuit breaker — lazy-loaded to avoid circular deps
 
   constructor() {
     this.client = axios.create({
       baseURL: config.KALSHI_BASE_URL,
       timeout: 30000,
     });
+
+    // Circuit breaker for Kalshi API
+    const { kalshiBreaker } = require('../lib/circuit-breaker');
+    this.breaker = kalshiBreaker;
 
     // Kalshi rate limit: ~2 req/s for paginated fetches
     this.limiter = new Bottleneck({
@@ -150,10 +155,12 @@ export class KalshiClient implements PredictionMarketAdapter {
 
       const start = Date.now();
       try {
-        const response = await this.limiter.schedule(() =>
-          this.client.get<{ events: { markets: KalshiMarket[]; category: string }[]; cursor: string | null }>(fullPath, {
-            headers: this.getAuthHeaders('GET', fullPath),
-          })
+        const response = await this.breaker.execute(() =>
+          this.limiter.schedule(() =>
+            this.client.get<{ events: { markets: KalshiMarket[]; category: string }[]; cursor: string | null }>(fullPath, {
+              headers: this.getAuthHeaders('GET', fullPath),
+            })
+          )
         );
 
         await logApiUsage({
@@ -413,10 +420,12 @@ export class KalshiClient implements PredictionMarketAdapter {
 
       const start = Date.now();
       try {
-        const response = await this.limiter.schedule(() =>
-          this.client.get<{ events: { markets: KalshiMarket[]; category: string }[]; cursor: string | null }>(fullPath, {
-            headers: this.getAuthHeaders('GET', fullPath),
-          })
+        const response = await this.breaker.execute(() =>
+          this.limiter.schedule(() =>
+            this.client.get<{ events: { markets: KalshiMarket[]; category: string }[]; cursor: string | null }>(fullPath, {
+              headers: this.getAuthHeaders('GET', fullPath),
+            })
+          )
         );
 
         await logApiUsage({

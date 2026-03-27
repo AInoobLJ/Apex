@@ -22,6 +22,17 @@ let cachedDate = '';
 let callsThisHour = 0;
 let currentHour = new Date().getHours();
 
+// ── Mutex for recordLLMSpend to prevent race conditions ──
+// Without this, concurrent LLM calls do read-modify-write on the budget
+// counter, allowing the hard limit to be silently exceeded.
+let spendLock: Promise<void> = Promise.resolve();
+function withSpendLock<T>(fn: () => Promise<T>): Promise<T> {
+  let release: () => void;
+  const prev = spendLock;
+  spendLock = new Promise<void>(resolve => { release = resolve; });
+  return prev.then(fn).finally(() => release!());
+}
+
 function getTodayDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -125,41 +136,46 @@ async function getBudgetConfig(): Promise<LLMBudgetConfig> {
 }
 
 export async function recordLLMSpend(cost: number): Promise<{ remaining: number; overBudget: boolean; alertTriggered: boolean }> {
-  // Update in-memory cache immediately
-  cachedSpend += cost;
+  // Mutex: serialize all spend operations to prevent race conditions.
+  // Without this, concurrent calls can read-modify-write the DB row
+  // simultaneously, silently exceeding the hard budget limit.
+  return withSpendLock(async () => {
+    // Update in-memory cache immediately
+    cachedSpend += cost;
 
-  const config = await getBudgetConfig();
-  config.todaySpend += cost;
+    const config = await getBudgetConfig();
+    config.todaySpend += cost;
 
-  await prisma.systemConfig.update({
-    where: { key: SYSTEM_CONFIG_KEY },
-    data: { value: toJsonValue(config) },
+    await prisma.systemConfig.update({
+      where: { key: SYSTEM_CONFIG_KEY },
+      data: { value: toJsonValue(config) },
+    });
+
+    // Sync cached value from DB (canonical)
+    cachedSpend = config.todaySpend;
+
+    const remaining = config.dailyBudget - config.todaySpend;
+    const percentUsed = config.todaySpend / config.dailyBudget;
+    const alertTriggered = percentUsed >= ALERT_THRESHOLD;
+    const overBudget = config.todaySpend >= HARD_LIMIT;
+
+    if (overBudget) {
+      logger.error({
+        todaySpend: config.todaySpend.toFixed(4),
+        hardLimit: HARD_LIMIT,
+        dailyBudget: config.dailyBudget,
+      }, '🚨 LLM HARD LIMIT HIT — all future calls blocked until midnight');
+    } else if (alertTriggered) {
+      logger.warn({
+        todaySpend: config.todaySpend.toFixed(4),
+        dailyBudget: config.dailyBudget,
+        percentUsed: Math.round(percentUsed * 100),
+        callsThisHour,
+      }, 'LLM budget alert: 80% consumed — throttled to 10 calls/hr');
+    }
+
+    return { remaining, overBudget, alertTriggered };
   });
-
-  // Sync cached value from DB (canonical)
-  cachedSpend = config.todaySpend;
-
-  const remaining = config.dailyBudget - config.todaySpend;
-  const percentUsed = config.todaySpend / config.dailyBudget;
-  const alertTriggered = percentUsed >= ALERT_THRESHOLD;
-  const overBudget = config.todaySpend >= HARD_LIMIT;
-
-  if (overBudget) {
-    logger.error({
-      todaySpend: config.todaySpend.toFixed(4),
-      hardLimit: HARD_LIMIT,
-      dailyBudget: config.dailyBudget,
-    }, '🚨 LLM HARD LIMIT HIT — all future calls blocked until midnight');
-  } else if (alertTriggered) {
-    logger.warn({
-      todaySpend: config.todaySpend.toFixed(4),
-      dailyBudget: config.dailyBudget,
-      percentUsed: Math.round(percentUsed * 100),
-      callsThisHour,
-    }, 'LLM budget alert: 80% consumed — throttled to 10 calls/hr');
-  }
-
-  return { remaining, overBudget, alertTriggered };
 }
 
 export async function getLLMBudgetStatus(): Promise<{

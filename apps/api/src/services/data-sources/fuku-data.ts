@@ -153,8 +153,11 @@ function setCache<T>(cache: Map<string, CacheEntry<T>>, key: string, data: T): v
 
 async function fetchJson(url: string): Promise<any> {
   const axios = require('axios');
-  const resp = await axios.get(url, { timeout: REQUEST_TIMEOUT });
-  return resp.data;
+  const { fukuBreaker } = require('../../lib/circuit-breaker');
+  return fukuBreaker.execute(async () => {
+    const resp = await axios.get(url, { timeout: REQUEST_TIMEOUT });
+    return resp.data;
+  });
 }
 
 // ── Sport detection ──

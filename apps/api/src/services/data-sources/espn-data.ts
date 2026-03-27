@@ -267,8 +267,11 @@ function findBothTeams(title: string, league: string): { team1: { id: string; na
 
 async function fetchJson(url: string): Promise<any> {
   const axios = require('axios');
-  const resp = await axios.get(url, { timeout: REQUEST_TIMEOUT });
-  return resp.data;
+  const { espnBreaker } = require('../../lib/circuit-breaker');
+  return espnBreaker.execute(async () => {
+    const resp = await axios.get(url, { timeout: REQUEST_TIMEOUT });
+    return resp.data;
+  });
 }
 
 function getCached<T>(cache: Map<string, CacheEntry<T>>, key: string, ttl: number): T | null {

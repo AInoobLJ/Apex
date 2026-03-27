@@ -182,13 +182,16 @@ export async function callClaude<T>(options: ClaudeCallOptions): Promise<ClaudeR
           }]
         : options.systemPrompt;
 
-      const response = await limiter.schedule(() =>
-        client.messages.create({
-          model: modelConfig.model,
-          max_tokens: maxTokens,
-          system: systemMessage,
-          messages: [{ role: 'user', content: options.userMessage }],
-        })
+      const { claudeBreaker } = require('../lib/circuit-breaker');
+      const response: Anthropic.Message = await claudeBreaker.execute(() =>
+        limiter.schedule(() =>
+          client.messages.create({
+            model: modelConfig.model,
+            max_tokens: maxTokens,
+            system: systemMessage,
+            messages: [{ role: 'user', content: options.userMessage }],
+          })
+        )
       );
 
       const latencyMs = Date.now() - start;

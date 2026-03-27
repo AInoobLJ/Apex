@@ -173,3 +173,23 @@ export const binanceBreaker = getCircuitBreaker('binance');
 export const coingeckoBreaker = getCircuitBreaker('coingecko');
 export const fredBreaker = getCircuitBreaker('fred');
 export const newsBreaker = getCircuitBreaker('news');
+export const fukuBreaker = getCircuitBreaker('fuku', { failureThreshold: 3, resetTimeoutMs: 2 * 60 * 1000 });
+export const espnBreaker = getCircuitBreaker('espn', { failureThreshold: 3, resetTimeoutMs: 2 * 60 * 1000 });
+export const oddsApiBreaker = getCircuitBreaker('odds-api', { failureThreshold: 3, resetTimeoutMs: 5 * 60 * 1000 });
+
+/**
+ * Convenience: wrap an async function with a named circuit breaker.
+ * Returns null instead of throwing when the circuit is open.
+ */
+export async function withBreaker<T>(breakerName: string, fn: () => Promise<T>): Promise<T | null> {
+  const breaker = getCircuitBreaker(breakerName);
+  try {
+    return await breaker.execute(fn);
+  } catch (err) {
+    if (err instanceof CircuitOpenError) {
+      logger.debug({ breaker: breakerName }, `Circuit breaker open — fast-failing`);
+      return null;
+    }
+    throw err; // Re-throw non-circuit errors
+  }
+}

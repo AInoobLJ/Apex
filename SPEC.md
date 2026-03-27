@@ -3327,3 +3327,43 @@ Computed from `market.createdAt` instead of `signal.createdAt`. At training time
 - NaN model intercept → rejected, default weights kept ✅
 - NaN weight entries → removed, model still works ✅
 - Kill-switch string "true" → rejected (only boolean true accepted) ✅
+
+### V2.34 Wire Circuit Breakers, Fix Arb Execution Safety, Fix Budget Race Condition (2026-03-27 PM)
+
+**3 critical issues fixed:**
+
+**Issue 1 — Circuit breakers were dead code:**
+Circuit breakers existed in `apps/api/src/lib/circuit-breaker.ts` (CLOSED/OPEN/HALF_OPEN pattern) but no external API call went through `.execute()`. Fixed: wired circuit breakers into all critical API calls:
+
+| Service | Breaker | Config |
+|---------|---------|--------|
+| Claude/Anthropic API | `claudeBreaker` | 10 failures / 10min → 5min pause |
+| Kalshi API | `kalshiBreaker` | 5 failures / 10min → 5min pause |
+| Polymarket API | `polymarketBreaker` | 5 failures / 10min → 5min pause |
+| Fuku Predictions API | `fukuBreaker` | 3 failures / 10min → 2min pause |
+| ESPN API | `espnBreaker` | 3 failures / 10min → 2min pause |
+| The Odds API | `oddsApiBreaker` | 3 failures / 10min → 5min pause |
+
+Added `withBreaker()` convenience function that returns null instead of throwing on OPEN circuit.
+
+**Issue 2 — executeArb bypassed all 7 preflight risk gates:**
+`executeArb()` now runs the same safety gates as single-leg execution:
+1. Circuit breaker check for BOTH platforms (abort if either is OPEN)
+2. Full 7-gate preflight on leg 1 executor (daily limits, position limits, exposure)
+3. Only then proceed to place orders
+
+If any gate fails, entire arb is aborted — no orphaned legs.
+
+**Issue 3 — Budget tracker race condition:**
+Concurrent LLM calls did read-modify-write on the DB budget counter, allowing the $5 hard limit to be silently exceeded. Fixed: added promise-based mutex (`withSpendLock`) that serializes all `recordLLMSpend` operations. Guarantees budget limit is never exceeded even with concurrent signal processing.
+
+**Files changed:**
+- `apps/api/src/lib/circuit-breaker.ts`: Added fuku/espn/oddsApi breakers, `withBreaker()` util
+- `apps/api/src/services/claude-client.ts`: Anthropic calls through `claudeBreaker`
+- `apps/api/src/services/kalshi-client.ts`: Kalshi API calls through `kalshiBreaker`
+- `apps/api/src/services/polymarket-client.ts`: Polymarket calls through `polymarketBreaker`
+- `apps/api/src/services/data-sources/fuku-data.ts`: Fuku calls through `fukuBreaker`
+- `apps/api/src/services/data-sources/espn-data.ts`: ESPN calls through `espnBreaker`
+- `apps/api/src/services/data-sources/odds-api.ts`: Odds API calls through `oddsApiBreaker`
+- `packages/tradex/src/manager.ts`: `executeArb()` now runs preflight + circuit breaker checks
+- `apps/api/src/services/llm-budget-tracker.ts`: Mutex on `recordLLMSpend`

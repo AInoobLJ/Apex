@@ -759,6 +759,12 @@
 - [x] [HIGH] loadModel validates deserialized weights from DB — removes NaN/Infinity entries, rejects corrupt intercept, logs warnings.
 - [x] [VERIFY] All validation tests pass: NaN signals excluded, invalid probabilities rejected, corrupt weights cleaned, kill-switch string rejected.
 
+### Circuit Breakers, Arb Safety, Budget Race Condition (2026-03-27 PM)
+
+- [x] [CRITICAL] Wired circuit breakers into all external API calls: Claude, Kalshi, Polymarket, Fuku, ESPN, Odds API. Previously existed as dead code — now actually protect against cascading failures.
+- [x] [CRITICAL] Added preflight gates to `executeArb()`: checks circuit breakers for BOTH platforms + runs full 7-gate preflight before placing any orders. Previously bypassed ALL safety gates.
+- [x] [HIGH] Fixed budget tracker race condition: added promise-based mutex on `recordLLMSpend`. Prevents concurrent LLM calls from exceeding the $5/day hard limit via read-modify-write race.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)

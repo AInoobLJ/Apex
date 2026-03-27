@@ -151,6 +151,39 @@ export class ExecutionManager {
       return { leg1: failResult, leg2: { ...failResult, platform: arb.leg2.platform }, status: 'FAILED' };
     }
 
+    // ── PREFLIGHT: Same safety gates as single-leg execution ──
+    // Check circuit breakers for BOTH platforms before placing any orders
+    if (this.isCircuitOpen(arb.leg1.platform)) {
+      const failResult: OrderResult = {
+        orderId: '', platform: arb.leg1.platform, status: 'FAILED',
+        filledPrice: null, filledSize: null, fee: 0, latencyMs: 0,
+        errorMessage: `Circuit breaker open for ${arb.leg1.platform} — arb aborted`,
+      };
+      return { leg1: failResult, leg2: { ...failResult, platform: arb.leg2.platform }, status: 'FAILED' };
+    }
+    if (this.isCircuitOpen(arb.leg2.platform)) {
+      const failResult: OrderResult = {
+        orderId: '', platform: arb.leg2.platform, status: 'FAILED',
+        filledPrice: null, filledSize: null, fee: 0, latencyMs: 0,
+        errorMessage: `Circuit breaker open for ${arb.leg2.platform} — arb aborted`,
+      };
+      return { leg1: { ...failResult, platform: arb.leg1.platform }, leg2: failResult, status: 'FAILED' };
+    }
+
+    // Run preflight risk gates (daily limits, position limits, exposure checks)
+    const preflightResult = await runPreflight({
+      ...preflightCtx,
+      executor: executor1,
+    });
+    if (!preflightResult.pass) {
+      const failResult: OrderResult = {
+        orderId: '', platform: arb.leg1.platform, status: 'FAILED',
+        filledPrice: null, filledSize: null, fee: 0, latencyMs: 0,
+        errorMessage: `Arb preflight failed: ${preflightResult.failedGate} — ${preflightResult.reason}`,
+      };
+      return { leg1: failResult, leg2: { ...failResult, platform: arb.leg2.platform }, status: 'FAILED' };
+    }
+
     const leg1Request: OrderRequest = {
       platform: arb.leg1.platform,
       ticker: arb.leg1.ticker,
