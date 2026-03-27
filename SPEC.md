@@ -3423,3 +3423,23 @@ Concurrent LLM calls did read-modify-write on the DB budget counter, allowing th
 **Base class updated:** `SignalModule` constructor now accepts optional `{ dataProvider?, llmProvider? }`.
 
 **Remaining:** ARBEX, SIGINT, NEXUS sub-modules still use direct Prisma (lower priority — can be migrated incrementally).
+
+### V2.37 PM2 Persistent Process Management (2026-03-27 PM)
+
+**Problem:** API server and dashboard died every time a Claude Code session ended (4+ times today). Services started in Claude's terminal don't survive session restart.
+
+**Fix:** Installed pm2 globally and created `ecosystem.config.cjs`. All three services now run as pm2-managed daemons that persist across terminal sessions, auto-restart on crash, and can be saved/restored across reboots.
+
+**PM2 commands:**
+| Command | Description |
+|---------|-------------|
+| `pm2 start ecosystem.config.cjs` | Start all services |
+| `pm2 status` | Check all services |
+| `pm2 logs` | Tail all logs |
+| `pm2 logs apex-api` | Tail API logs only |
+| `pm2 restart all` | Restart after code changes |
+| `pm2 stop all` | Stop everything |
+| `pm2 save` | Save process list for `pm2 resurrect` |
+| `pm2 monit` | Live monitoring dashboard |
+
+**Claude Code rule:** After code changes that require a restart, run `pm2 restart all`. Never start API/dashboard directly — pm2 manages them.

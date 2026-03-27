@@ -779,6 +779,13 @@
 - [x] [FIX] Updated SignalModule base class to accept optional `{ dataProvider, llmProvider }` deps.
 - [x] [VERIFY] All 57 tests pass. Build clean. Worker starts and processes signals correctly.
 
+### PM2 Persistent Process Management (2026-03-27 PM)
+
+- [x] [FIX] Installed pm2 globally. Created `ecosystem.config.cjs` with auto-restart for API, worker, and dashboard.
+- [x] [FIX] All services persist across Claude Code sessions — no more dashboard crashes between sessions.
+- [x] [VERIFY] `pm2 status` shows all 3 services online. API healthy, dashboard HTTP 200, worker processing.
+- [x] [RULE] After code changes: `pm2 restart all`. Never start services directly.
+
 ### Discussed But Not Built
 
 - [ ] [FUTURE] Multi-leg execution strategies (pairs trading across correlated markets)
