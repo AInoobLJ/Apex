@@ -23,10 +23,17 @@ export async function handleDataRetention(job: Job): Promise<void> {
     prisma.apiUsageLog.deleteMany({ where: { createdAt: { lt: ninetyDays } } }),
   ]);
 
+  // Mark expired markets as RESOLVED (prevents phantom edges on dashboard)
+  const expiredMarkets = await prisma.market.updateMany({
+    where: { status: 'ACTIVE', closesAt: { lt: new Date() } },
+    data: { status: 'RESOLVED' },
+  });
+
   logger.info({
     snapshots: snapshots.count,
     orderbooks: orderbooks.count,
     signals: signals.count,
     apiLogs: apiLogs.count,
+    expiredMarkets: expiredMarkets.count,
   }, 'Data retention cleanup completed');
 }

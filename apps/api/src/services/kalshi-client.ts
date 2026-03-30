@@ -348,7 +348,7 @@ export class KalshiClient implements PredictionMarketAdapter {
    * Includes all crypto assets available on Kalshi.
    */
   async fetchCryptoSeriesMarkets(): Promise<KalshiMarket[]> {
-    const CRYPTO_SERIES = ['KXBTC', 'KXETH', 'KXSOL', 'KXXRP', 'KXDOGE', 'KXBNB', 'KXHYPE'];
+    const CRYPTO_SERIES = ['KXBTC', 'KXETH', 'KXSOL'];
     const allMarkets: KalshiMarket[] = [];
 
     for (const series of CRYPTO_SERIES) {
@@ -400,6 +400,152 @@ export class KalshiClient implements PredictionMarketAdapter {
 
     logger.info({ count: allMarkets.length }, 'Kalshi crypto series fetched');
     return allMarkets;
+  }
+
+  /**
+   * Fetch recently-settled crypto series markets from Kalshi.
+   * Queries closed events for each crypto series to pick up resolution outcomes.
+   * This is the missing link: the regular sync only fetches status='open',
+   * so settled markets never get their resolution field updated in the DB.
+   */
+  async fetchResolvedCryptoMarkets(): Promise<KalshiMarket[]> {
+    const CRYPTO_SERIES = ['KXBTC', 'KXETH', 'KXSOL'];
+    const allMarkets: KalshiMarket[] = [];
+
+    for (const series of CRYPTO_SERIES) {
+      let cursor: string | null = null;
+      let pages = 0;
+
+      do {
+        const path = '/events';
+        const qp: Record<string, string> = {
+          limit: '10',
+          series_ticker: series,
+          status: 'closed',  // ← Key difference: fetch SETTLED markets
+          with_nested_markets: 'true',
+        };
+        if (cursor) qp.cursor = cursor;
+        const queryString = new URLSearchParams(qp).toString();
+        const fullPath = `${path}?${queryString}`;
+        const start = Date.now();
+
+        try {
+          const response = await this.limiter.schedule(() =>
+            this.client.get<{ events: { markets: KalshiMarket[]; category: string }[]; cursor: string | null }>(fullPath, {
+              headers: this.getAuthHeaders('GET', fullPath),
+            })
+          );
+
+          await logApiUsage({
+            service: 'kalshi',
+            endpoint: `GET /events (${series} resolved)`,
+            latencyMs: Date.now() - start,
+            statusCode: response.status,
+          });
+
+          for (const event of response.data.events) {
+            for (const market of event.markets) {
+              market.category = event.category || 'Crypto';
+              if (market.result) allMarkets.push(market); // Only those with outcomes
+            }
+          }
+          cursor = response.data.cursor;
+          pages++;
+          // Limit pages: we only need recent resolutions, not all history
+          if (pages >= 3 || !cursor) break;
+        } catch (err) {
+          logger.error(err, `Kalshi fetchResolvedCrypto (${series}) failed`);
+          break;
+        }
+      } while (cursor);
+    }
+
+    logger.info({ count: allMarkets.length }, 'Kalshi resolved crypto series fetched');
+    return allMarkets;
+  }
+
+  /**
+   * Fetch recently-settled general (non-crypto) markets from Kalshi.
+   * Limited to 3 pages (~150 events) to avoid excessive API calls.
+   */
+  async fetchResolvedGeneralMarkets(): Promise<KalshiMarket[]> {
+    const allMarkets: KalshiMarket[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+
+    do {
+      const path = '/events';
+      const qp: Record<string, string> = {
+        limit: '50',
+        status: 'closed',
+        with_nested_markets: 'true',
+      };
+      if (cursor) qp.cursor = cursor;
+      const queryString = new URLSearchParams(qp).toString();
+      const fullPath = `${path}?${queryString}`;
+      const start = Date.now();
+
+      try {
+        const response = await this.breaker.execute(() =>
+          this.limiter.schedule(() =>
+            this.client.get<{ events: { markets: KalshiMarket[]; category: string }[]; cursor: string | null }>(fullPath, {
+              headers: this.getAuthHeaders('GET', fullPath),
+            })
+          )
+        );
+
+        await logApiUsage({
+          service: 'kalshi',
+          endpoint: 'GET /events (resolved general)',
+          latencyMs: Date.now() - start,
+          statusCode: response.status,
+        });
+
+        for (const event of response.data.events) {
+          for (const market of event.markets) {
+            market.category = event.category;
+            if (market.result) allMarkets.push(market);
+          }
+        }
+        cursor = response.data.cursor;
+        pages++;
+        if (pages >= 3 || !cursor) break;
+      } catch (err) {
+        logger.error(err, 'Kalshi fetchResolvedGeneralMarkets failed');
+        break;
+      }
+    } while (cursor);
+
+    // Filter parlays
+    return allMarkets.filter(m => !m.event_ticker.startsWith('KXMVE'));
+  }
+
+  /**
+   * Fetch resolution status for specific market tickers.
+   * Used by targeted resolution sync to check markets APEX holds positions on.
+   * More reliable than broad sweep — directly queries each ticker.
+   */
+  async fetchMarketByTicker(ticker: string): Promise<KalshiMarket | null> {
+    const path = `/markets/${ticker}`;
+    const start = Date.now();
+    try {
+      const response = await this.limiter.schedule(() =>
+        this.client.get<{ market: KalshiMarket }>(path, {
+          headers: this.getAuthHeaders('GET', path),
+        })
+      );
+      await logApiUsage({
+        service: 'kalshi',
+        endpoint: `GET /markets/${ticker}`,
+        latencyMs: Date.now() - start,
+        statusCode: response.status,
+      });
+      return response.data.market;
+    } catch (err: any) {
+      if (err?.response?.status === 404) return null;
+      logger.debug({ err: err.message, ticker }, 'fetchMarketByTicker failed');
+      return null;
+    }
   }
 
   private async fetchMarketsRaw(_params?: MarketQuery): Promise<KalshiMarket[]> {

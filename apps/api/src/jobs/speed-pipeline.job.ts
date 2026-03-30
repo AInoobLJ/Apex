@@ -5,17 +5,13 @@
  * Target: markets resolving within 24 hours (crypto hourly/daily brackets + floors)
  * No LLM calls — pure math, fast execution.
  *
- * NOTE: Paper trade creation TEMPORARILY DISABLED — crypto bracket data quality
- * isn't reliable yet. Pipeline still runs for monitoring/signals only.
- * Research pipeline handles all paper trades until crypto data is validated.
+ * Signals persist to DB for research pipeline merge (CORTEX fusion).
+ * SPEEDEX is included in CORTEX probability fusion and can satisfy the
+ * LLM module gate for CRYPTO markets (Black-Scholes is quantitatively rigorous).
  */
 import { Job } from 'bullmq';
 import { syncPrisma as prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
-// Paper trade imports retained but unused — speed pipeline paper trades temporarily disabled.
-// import { EDGE_ACTIONABILITY_THRESHOLD, MIN_CONFIDENCE_FOR_ACTIONABLE } from '@apex/shared';
-// import { enterPaperPosition, checkConcentrationLimit, MIN_HOURS_TO_EXPIRY, MIN_CRYPTO_VOLUME } from '../services/paper-trader';
-// import { parseKalshiCryptoTicker } from '../services/crypto-price';
 
 // Import speed modules
 import { speedexModule } from '../modules/speedex';
@@ -113,12 +109,8 @@ export async function handleSpeedPipeline(job: Job): Promise<{ signals: number; 
         }
       }
 
-      // ── PAPER TRADES DISABLED ──
-      // Crypto bracket data quality isn't reliable yet. Speed pipeline continues
-      // running for monitoring/signals but does NOT enter paper positions.
-      // Research pipeline paper trades only until crypto data is validated.
-      // TODO: Re-enable when crypto bracket data quality is confirmed reliable.
-      // See: speed pipeline still persists signals above for monitoring.
+      // Speed pipeline persists signals to DB. Research pipeline picks them up
+      // via mergePreExistingSignals() → CORTEX fusion → trade creation.
     }
 
     const elapsed = Date.now() - start;

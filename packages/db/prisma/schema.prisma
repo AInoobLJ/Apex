@@ -95,6 +95,7 @@ model Market {
   opportunities     Opportunity[]
   kalshiMatches     MarketMatch[]  @relation("kalshiMatch")
   polymarketMatches MarketMatch[]  @relation("polymarketMatch")
+  trainingSnapshots TrainingSnapshot[]
 
   @@unique([platform, platformMarketId])
   @@index([status])
@@ -499,6 +500,61 @@ model CausalEdge {
   @@unique([fromMarketId, toMarketId])
   @@index([fromMarketId])
   @@index([toMarketId])
+}
+
+// ─── Training Data Collection ────────────────────
+// Append-only table of feature vectors + module outputs for every CORTEX synthesis.
+// Linked to resolution outcomes when markets resolve. This is the labeled dataset
+// the FeatureModel needs to train on.
+
+model TrainingSnapshot {
+  id                    String    @id @default(cuid())
+  marketId              String
+  market                Market    @relation(fields: [marketId], references: [id])
+  // Signal context
+  cortexProbability     Float     // Fused probability from CORTEX
+  marketPrice           Float     // YES price at signal time
+  edgeDirection         String    // BUY_YES or BUY_NO
+  edgeMagnitude         Float     // |cortexProbability - marketPrice|
+  confidence            Float     // CORTEX confidence
+  daysToResolution      Int       // Days until market closes
+  marketCategory        String    // Market category at signal time
+  // Module outputs: each module's raw probability (null if module didn't fire)
+  moduleOutputs         Json      // { COGEX: { prob, conf }, DOMEX: { prob, conf }, ... }
+  // Full feature vector for FeatureModel retraining
+  featureVector         Json?     // Serialized FeatureVector from DOMEX (if available)
+  featureSchemaVersion  Int?      // FEATURE_SCHEMA_VERSION at capture time
+  // Resolution outcome (filled when market resolves)
+  outcome               Int?      // 1=YES, 0=NO (null until resolved)
+  resolvedAt            DateTime? // When the resolution was recorded
+  // Metadata
+  createdAt             DateTime  @default(now())
+
+  @@index([marketId])
+  @@index([outcome])
+  @@index([createdAt])
+  @@index([marketCategory])
+}
+
+// ─── Calibration Results ─────────────────────────
+// Periodic calibration snapshots for dashboard display and historical tracking.
+
+model CalibrationResult {
+  id            String   @id @default(cuid())
+  // Decile bucket: 0=0-10%, 1=10-20%, ..., 9=90-100%
+  bucket        Int
+  bucketLabel   String   // "0-10%", "10-20%", etc.
+  positionCount Int      // Number of positions in this bucket
+  winCount      Int      // Number of wins (correct direction)
+  predictedAvg  Float    // Average predicted probability in bucket
+  actualWinRate Float    // Actual win rate in bucket
+  calibrationError Float // predictedAvg - actualWinRate (positive = overconfident)
+  // Period
+  periodStart   DateTime
+  periodEnd     DateTime
+  createdAt     DateTime @default(now())
+
+  @@index([createdAt])
 }
 
 // ─── Phase 4: Backtesting ───────────────────────

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fuseSignals, RawSignal } from '../signal-fusion';
+import { fuseSignals, computeAdaptiveWeights, STATIC_MODULE_WEIGHTS, RawSignal, ModuleScoreInput } from '../signal-fusion';
 
 function makeSignal(overrides: Partial<RawSignal> = {}): RawSignal {
   return {
@@ -84,5 +84,100 @@ describe('fuseSignals', () => {
 
     const resultLow = fuseSignals([makeSignal({ probability: 0.001, confidence: 0.99 })]);
     expect(resultLow.probability).toBeGreaterThanOrEqual(0.01);
+  });
+});
+
+describe('computeAdaptiveWeights', () => {
+  it('returns static weights when no scores provided', () => {
+    const { weights, adaptive, blendRatio } = computeAdaptiveWeights([]);
+    expect(adaptive).toBe(false);
+    expect(blendRatio).toBe(0);
+    expect(weights.COGEX).toBe(STATIC_MODULE_WEIGHTS.COGEX);
+  });
+
+  it('returns static weights when scores have insufficient samples', () => {
+    const scores: ModuleScoreInput[] = [
+      { moduleId: 'COGEX', brierScore: 0.15, sampleSize: 5 },
+    ];
+    const { adaptive } = computeAdaptiveWeights(scores);
+    expect(adaptive).toBe(false);
+  });
+
+  it('activates adaptive weights with sufficient samples', () => {
+    const scores: ModuleScoreInput[] = [
+      { moduleId: 'COGEX', brierScore: 0.15, sampleSize: 50 },
+      { moduleId: 'LEGEX', brierScore: 0.30, sampleSize: 50 },
+    ];
+    const { adaptive, weights } = computeAdaptiveWeights(scores);
+    expect(adaptive).toBe(true);
+    // COGEX (lower Brier) should get higher weight than LEGEX
+    expect(weights.COGEX).toBeGreaterThan(weights.LEGEX);
+  });
+
+  it('respects minimum weight floor', () => {
+    const scores: ModuleScoreInput[] = [
+      { moduleId: 'COGEX', brierScore: 0.01, sampleSize: 200 },
+      { moduleId: 'LEGEX', brierScore: 0.90, sampleSize: 200 },
+    ];
+    const { weights } = computeAdaptiveWeights(scores);
+    // Even the worst performer keeps minimum weight
+    expect(weights.LEGEX).toBeGreaterThanOrEqual(0.02);
+  });
+
+  it('blend ratio increases with sample count', () => {
+    const makeScores = (n: number): ModuleScoreInput[] => [
+      { moduleId: 'COGEX', brierScore: 0.15, sampleSize: n },
+      { moduleId: 'LEGEX', brierScore: 0.25, sampleSize: n },
+    ];
+    const low = computeAdaptiveWeights(makeScores(15));
+    const mid = computeAdaptiveWeights(makeScores(55));
+    const high = computeAdaptiveWeights(makeScores(200));
+
+    expect(low.blendRatio).toBeLessThan(mid.blendRatio);
+    expect(mid.blendRatio).toBeLessThan(high.blendRatio);
+    expect(high.blendRatio).toBe(1); // fully adaptive at 100+ samples
+  });
+
+  it('modules without scores keep static weights', () => {
+    const scores: ModuleScoreInput[] = [
+      { moduleId: 'COGEX', brierScore: 0.15, sampleSize: 50 },
+    ];
+    const { weights } = computeAdaptiveWeights(scores);
+    // FLOWEX has no score data, keeps its static weight
+    expect(weights.FLOWEX).toBe(STATIC_MODULE_WEIGHTS.FLOWEX);
+  });
+});
+
+describe('fuseSignals with adaptive weights', () => {
+  it('uses static weights when no moduleScores provided', () => {
+    const signals = [
+      makeSignal({ moduleId: 'COGEX', probability: 0.7, confidence: 0.8 }),
+      makeSignal({ moduleId: 'LEGEX', probability: 0.6, confidence: 0.8 }),
+    ];
+    const withoutScores = fuseSignals(signals);
+    const withEmptyScores = fuseSignals(signals, { moduleScores: [] });
+
+    expect(withoutScores.probability).toBeCloseTo(withEmptyScores.probability, 5);
+  });
+
+  it('adapts weights when moduleScores are provided', () => {
+    const signals = [
+      makeSignal({ moduleId: 'COGEX', probability: 0.9, confidence: 0.8 }),
+      makeSignal({ moduleId: 'LEGEX', probability: 0.1, confidence: 0.8 }),
+    ];
+
+    // Without adaptive: COGEX has higher static weight (0.15 vs 0.10)
+    const staticResult = fuseSignals(signals);
+
+    // With adaptive: give LEGEX much better Brier (lower = better)
+    const adaptiveResult = fuseSignals(signals, {
+      moduleScores: [
+        { moduleId: 'COGEX', brierScore: 0.40, sampleSize: 200 },
+        { moduleId: 'LEGEX', brierScore: 0.10, sampleSize: 200 },
+      ],
+    });
+
+    // Adaptive result should shift probability toward LEGEX's 0.1
+    expect(adaptiveResult.probability).toBeLessThan(staticResult.probability);
   });
 });

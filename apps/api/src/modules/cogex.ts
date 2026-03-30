@@ -52,7 +52,17 @@ export class CogexModule extends SignalModule {
       adjustments.recency * BIAS_WEIGHTS.recency +
       adjustments.favLongshot * BIAS_WEIGHTS.favLongshot;
 
-    const biasAdjustedProbability = clampProbability(marketPrice + combinedAdjustment);
+    // ── Debiasing: Shrink the combined adjustment toward zero ──
+    // Without calibration data (insufficient resolved markets), COGEX adjustments
+    // can have a systematic positive drift (e.g., tail-risk only pushes up for the
+    // low-priced markets that dominate the scan pool). Apply a shrinkage factor
+    // that increases as calibration data accumulates. With no data, adjustments
+    // are halved; with sufficient data, they're applied at full strength.
+    const calibrationSamples = await this.getCalibrationSampleCount(marketPrice);
+    const shrinkage = Math.min(1.0, 0.5 + 0.5 * (calibrationSamples / 100));
+    const shrunkAdjustment = combinedAdjustment * shrinkage;
+
+    const biasAdjustedProbability = clampProbability(marketPrice + shrunkAdjustment);
     const maxAbsAdj = Math.max(
       Math.abs(anchoringAdj),
       Math.abs(tailRiskAdj),
@@ -72,7 +82,7 @@ export class CogexModule extends SignalModule {
       adjustments,
     };
 
-    const reasoning = this.buildReasoning(adjustments, combinedAdjustment, marketPrice);
+    const reasoning = this.buildReasoning(adjustments, shrunkAdjustment, marketPrice);
 
     return this.makeSignal(
       market.id,
@@ -220,6 +230,26 @@ export class CogexModule extends SignalModule {
   }
 
   // ── Helpers ──
+  /**
+   * Estimate how many resolved markets we have for calibration in this price range.
+   * Used to scale adjustment confidence — fewer samples = more shrinkage toward zero.
+   */
+  private async getCalibrationSampleCount(marketPrice: number): Promise<number> {
+    if (!this.dataProvider) return 0;
+    try {
+      // Use the same resolved markets data we already fetch for tail-risk/fav-longshot
+      const resolved = await this.dataProvider.getResolvedMarkets('ALL', 500);
+      if (!resolved || resolved.length === 0) return 0;
+      // Count markets in a similar price range (±0.15)
+      return resolved.filter(m =>
+        m.priceSnapshots.length > 0 &&
+        Math.abs(m.priceSnapshots[0].yesPrice - marketPrice) < 0.15
+      ).length;
+    } catch {
+      return 0;
+    }
+  }
+
   private async getPriceHistory(marketId: string, days: number): Promise<PriceSnapshotData[]> {
     if (!this.dataProvider) throw new Error('COGEX requires dataProvider');
     return this.dataProvider.getPriceSnapshots(marketId, days);
@@ -281,8 +311,9 @@ export class CogexModule extends SignalModule {
   }
 }
 
-// Default singleton — will be replaced by orchestrator with injected providers
-export const cogexModule = new CogexModule();
+// Default singleton — initialized with PrismaDataProvider for price history access
+import { PrismaDataProvider } from '../providers/prisma-data-provider';
+export const cogexModule = new CogexModule({ dataProvider: new PrismaDataProvider() });
 
 // Factory for creating with injected providers
 export function createCogexModule(deps: ModuleDeps) {

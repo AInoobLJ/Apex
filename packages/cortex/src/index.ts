@@ -13,8 +13,8 @@
  */
 
 // ── SignalFusionEngine ──
-export { fuseSignals } from './signal-fusion';
-export type { RawSignal, FusedSignal } from './signal-fusion';
+export { fuseSignals, computeAdaptiveWeights, STATIC_MODULE_WEIGHTS } from './signal-fusion';
+export type { RawSignal, FusedSignal, ModuleScoreInput, FuseOptions } from './signal-fusion';
 
 // ── CalibrationEngine ──
 export {

@@ -9,6 +9,7 @@ interface ListEdgesQuery {
   sort?: string;
   direction?: string;
   limit?: string;
+  page?: string;
   actionableOnly?: string;
 }
 
@@ -22,10 +23,12 @@ export default async function edgeRoutes(fastify: FastifyInstance) {
       sort = 'edgeMagnitude',
       direction = 'desc',
       limit = '50',
+      page = '1',
       actionableOnly = 'false',
     } = request.query;
 
-    const limitNum = Math.min(200, Math.max(1, parseInt(limit)));
+    const pageSize = Math.min(100, Math.max(1, parseInt(limit)));
+    const pageNum = Math.max(1, parseInt(page));
     const minEV = parseFloat(minExpectedValue);
     const onlyActionable = actionableOnly === 'true';
 
@@ -37,7 +40,7 @@ export default async function edgeRoutes(fastify: FastifyInstance) {
       ? `WHERE ${whereConditions.join(' AND ')}`
       : '';
 
-    // Get the latest edge per market
+    // Get the latest edge per market (all of them — we paginate after filtering)
     const latestEdges = await prisma.$queryRawUnsafe<Array<{ id: string }>>(
       `SELECT DISTINCT ON ("marketId") id
        FROM "Edge"
@@ -48,9 +51,10 @@ export default async function edgeRoutes(fastify: FastifyInstance) {
     const edgeIds = latestEdges.map(e => e.id);
 
     if (edgeIds.length === 0) {
-      return { data: [] };
+      return { data: [], total: 0, page: pageNum, pageSize };
     }
 
+    // Fetch all matching edges (we need the full set for category/platform filtering and total count)
     const edges = await prisma.edge.findMany({
       where: {
         id: { in: edgeIds },
@@ -65,15 +69,15 @@ export default async function edgeRoutes(fastify: FastifyInstance) {
         [['expectedValue', 'edgeMagnitude', 'confidence', 'createdAt'].includes(sort) ? sort : 'edgeMagnitude']:
           direction === 'asc' ? 'asc' : 'desc',
       },
-      take: limitNum,
     });
 
-    // Filter by category/platform if specified
-    let filtered = edges;
+    // Filter out expired markets (closesAt in the past) and apply category/platform filters
+    const now = new Date();
+    let filtered = edges.filter(e => !e.market.closesAt || e.market.closesAt > now);
     if (category) filtered = filtered.filter(e => e.market.category === category);
     if (platform) filtered = filtered.filter(e => e.market.platform === platform);
 
-    // Compute TTR and capital efficiency, then optionally sort by capEff
+    // Compute TTR and capital efficiency
     const mapped = filtered.map(e => {
       const daysToResolution = e.market.closesAt
         ? Math.max(1, Math.ceil((e.market.closesAt.getTime() - Date.now()) / 86400000))
@@ -101,13 +105,18 @@ export default async function edgeRoutes(fastify: FastifyInstance) {
       };
     });
 
-    // Sort by capitalEfficiency if requested
+    // Sort by capitalEfficiency if requested (computed field, not in DB)
     if (sort === 'capitalEfficiency') {
       mapped.sort((a, b) => direction === 'asc'
         ? a.capitalEfficiency - b.capitalEfficiency
         : b.capitalEfficiency - a.capitalEfficiency);
     }
 
-    return { data: mapped };
+    // Paginate
+    const total = mapped.length;
+    const offset = (pageNum - 1) * pageSize;
+    const paginated = mapped.slice(offset, offset + pageSize);
+
+    return { data: paginated, total, page: pageNum, pageSize };
   });
 }

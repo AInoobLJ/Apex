@@ -34,7 +34,7 @@ export class ReflexModule extends SignalModule {
       const result = await this.llmProvider.call<ReflexResult>({
         task: 'REFLEX_ANALYSIS',
         systemPrompt: REFLEX_PROMPT,
-        userMessage: (() => { const { getDateContext, getMarketDateContext } = require('../lib/date-context'); return `${getDateContext()}\n${getMarketDateContext(market.closesAt)}\n\nMarket: ${market.title}\nCategory: ${market.category}\nCurrent YES price: ${(marketPrice * 100).toFixed(1)}%\nDescription: ${(market.description || '').slice(0, 400)}`; })(),
+        userMessage: (() => { const { getDateContext, getMarketDateContext } = require('../lib/date-context'); return `${getDateContext()}\n${getMarketDateContext(market.closesAt)}\n\nMarket: ${market.title}\nCategory: ${market.category}\nDescription: ${(market.description || '').slice(0, 400)}`; })(),
       });
 
       const analysis = result.parsed;
@@ -66,7 +66,8 @@ export class ReflexModule extends SignalModule {
   }
 }
 
-export const reflexModule = new ReflexModule();
+import { ClaudeLLMProvider } from '../providers/claude-llm-provider';
+export const reflexModule = new ReflexModule({ llmProvider: new ClaudeLLMProvider() });
 
 export function createReflexModule(deps: ModuleDeps) {
   return new ReflexModule(deps);

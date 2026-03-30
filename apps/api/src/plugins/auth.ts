@@ -7,6 +7,7 @@ async function authPlugin(fastify: FastifyInstance) {
     // Skip auth for CORS preflight and health check
     if (request.method === 'OPTIONS') return;
     if (request.url === '/api/v1/system/health') return;
+    if (request.url === '/api/v1/system/ready') return;
     if (request.url.startsWith('/ws')) return;
 
     const apiKey = request.headers['x-api-key'];

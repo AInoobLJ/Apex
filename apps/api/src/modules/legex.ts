@@ -112,7 +112,6 @@ export class LegexModule extends SignalModule {
       `## Market`,
       `Title: ${market.title}`,
       `Platform: ${market.platform}`,
-      `Current YES price: ${(marketPrice * 100).toFixed(1)}%`,
       `Category: ${market.category}`,
       ``,
       `## Resolution Text`,
@@ -122,5 +121,6 @@ export class LegexModule extends SignalModule {
   }
 }
 
-export const legexModule = new LegexModule();
+import { ClaudeLLMProvider } from '../providers/claude-llm-provider';
+export const legexModule = new LegexModule({ llmProvider: new ClaudeLLMProvider() });
 export function createLegexModule(deps: ModuleDeps) { return new LegexModule(deps); }

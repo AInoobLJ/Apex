@@ -1,4 +1,5 @@
 import { BaseExecutor } from './base';
+import { kalshiFee } from '@apex/shared';
 import type { OrderRequest, OrderResult } from '../types';
 
 const KALSHI_DEMO_URL = 'https://demo-api.kalshi.co/trade-api/v2';
@@ -26,10 +27,10 @@ export class KalshiExecutor extends BaseExecutor {
     this.apiSecret = config.apiSecret;
   }
 
-  // Fee: ceil(0.07 × contracts × price × (1 - price))
-  calculateFee(contracts: number, price: number): number {
-    if (price <= 0 || price >= 1) return 0;
-    return Math.ceil(0.07 * contracts * price * (1 - price) * 100) / 100;
+  // Kalshi fee: 7% of potential profit per contract = 0.07 × (1 - pricePaid)
+  // pricePaid is the fill price (YES price if buying YES, NO price if buying NO)
+  calculateFee(contracts: number, pricePaid: number): number {
+    return kalshiFee(pricePaid, contracts);
   }
 
   async placeOrder(request: OrderRequest): Promise<OrderResult> {

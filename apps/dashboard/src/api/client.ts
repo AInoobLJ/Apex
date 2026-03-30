@@ -130,6 +130,18 @@ export const api = {
       daysUntilBudgetExceeded: number | null;
     }>('/system/cost-forecast'),
 
+  getTrainingStatus: () =>
+    apiFetch<{
+      trainingData: { totalSnapshots: number; resolvedSnapshots: number; unresolvedSnapshots: number; byCategory: { category: string; count: number }[] };
+      featureModel: { status: string; sampleSize: number; validationAccuracy: number; trainedAt: string | null };
+      calibration: { bucket: string; positions: number; wins: number; predictedAvg: number; actualWinRate: number; calibrationError: number }[];
+      directionalBalance: { buyYes: number; buyNo: number; total: number; yesRatio: number };
+    }>('/system/training-status'),
+
+  // Paper Position Details
+  getPaperPositionDetails: (id: string) =>
+    apiFetch<Record<string, unknown>>(`/paper-positions/${id}/details`),
+
   // SIGINT
   getWallets: (query: Record<string, unknown> = {}) =>
     apiFetch<{ data: unknown[] }>(`/sigint/wallets?${qs(query)}`),
@@ -143,4 +155,25 @@ export const api = {
 
   getNexusInconsistencies: () =>
     apiFetch<{ data: unknown[] }>('/nexus/inconsistencies'),
+
+  // Crypto detail
+  getCryptoMarketDetail: (id: string) =>
+    apiFetch<Record<string, unknown>>(`/crypto/markets/${id}/detail`),
+
+  // Bracket Groups
+  getBracketGroups: () =>
+    apiFetch<{
+      groups: {
+        asset: string;
+        expiry: string;
+        positionCount: number;
+        combinedCostCents: string;
+        maxPayoutCents: string;
+        combinedEVCents: string;
+        isNegativeEV: boolean;
+        positions: { marketId: string; title: string; entryPriceCents: string; direction: string }[];
+      }[];
+      totalGroups: number;
+      conflictGroups: number;
+    }>('/crypto/bracket-groups'),
 };

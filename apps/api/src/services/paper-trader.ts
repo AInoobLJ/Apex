@@ -1,12 +1,8 @@
 import { syncPrisma as prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { parseKalshiCryptoTicker } from './crypto-price';
+import { kalshiFeePerContract } from '@apex/shared';
 import type { EdgeOutput } from '@apex/shared';
-
-// Kalshi fee model: ~3.5% per side (7% round trip).
-// Fee = 7% × price × (1 - price) per contract.
-// Subtract estimated entry fee from entry price to make paper P&L realistic.
-const KALSHI_FEE_RATE = 0.07;
 
 // Position concentration limits
 const MAX_POSITIONS_PER_ASSET_DATE = 3;
@@ -17,9 +13,15 @@ const MIN_HOURS_TO_EXPIRY = 0.5; // 30 minutes
 // Minimum volume for crypto bracket contracts
 const MIN_CRYPTO_VOLUME = 100; // $100
 
-function estimateFee(price: number): number {
-  return KALSHI_FEE_RATE * price * (1 - price);
-}
+// ── Paper Trading Sizing ──
+// Paper bankroll: the simulated account size Kelly fractions are scaled against.
+// kellySize from CORTEX is a fraction (e.g., 0.06 = 6% of bankroll).
+// We convert to contracts: contracts = (fraction × bankroll) / entryPrice.
+const PAPER_BANKROLL = 1000; // $1,000 simulated account
+
+// Minimum paper position: ensures positions are large enough to be meaningful.
+// Kalshi minimum order is 1 contract. We floor at 5 contracts ($1-$5 notional).
+const MIN_PAPER_CONTRACTS = 5;
 
 /**
  * Build a descriptive display name for a position.
@@ -35,11 +37,13 @@ export function buildPositionDisplayName(
   const parsed = parseKalshiCryptoTicker(platformContractId);
   if (!parsed) return title;
 
-  // Extract date from the ticker: KXBTC-26MAR2621-B67450-YES → 26MAR2621
+  // Extract date from the ticker: KXBTC-26MAR2917-B67125-YES
+  // Kalshi ticker date format: YY + MON + DD + HH
+  //   26  MAR  29  17  → year 2026, March 29, 17:00 (5PM)
   const dateMatch = platformContractId.match(/KX\w+-(\d{2})(\w{3})(\d{2})(\d{2})-/);
   let dateSuffix = '';
   if (dateMatch) {
-    const [, day, month, , hour] = dateMatch;
+    const [, , month, day, hour] = dateMatch; // skip group 1 (year), use group 3 as day
     const hourNum = parseInt(hour);
     const ampm = hourNum >= 12 ? 'PM' : 'AM';
     const displayHour = hourNum > 12 ? hourNum - 12 : hourNum === 0 ? 12 : hourNum;
@@ -78,11 +82,32 @@ export async function enterPaperPosition(edge: EdgeOutput, fairValue?: number, d
   if (existing) return null; // Don't duplicate
 
   // Adjust entry price for fees: buying costs more, selling gets less
+  // Fee depends on what you PAY: BUY_YES pays marketPrice, BUY_NO pays (1 - marketPrice)
   const rawPrice = edge.marketPrice;
-  const fee = estimateFee(rawPrice);
+  const pricePaid = edge.edgeDirection === 'BUY_YES' ? rawPrice : (1 - rawPrice);
+  const fee = kalshiFeePerContract(pricePaid);
   const adjustedEntryPrice = edge.edgeDirection === 'BUY_YES'
-    ? rawPrice + fee   // pay more when buying
-    : rawPrice - fee;  // receive less when selling
+    ? rawPrice + fee   // pay more when buying YES
+    : rawPrice - fee;  // receive less when buying NO (shown as YES price adjustment)
+
+  // ── Convert Kelly fraction to contracts ──
+  // kellySize from CORTEX is a bankroll fraction (e.g., 0.06 = 6%).
+  // Scale by paper bankroll then divide by entry price to get contract count.
+  // P&L formula uses: priceChange × kellySize (treating kellySize as contracts).
+  // Notional formula uses: kellySize × entryPrice (contracts × price = dollar cost).
+  const kellyFraction = edge.kellySize || edge.expectedValue * 100;
+  const dollarSize = kellyFraction * PAPER_BANKROLL;
+  const contracts = Math.max(MIN_PAPER_CONTRACTS, Math.round(dollarSize / (pricePaid || 0.50)));
+
+  if (contracts !== Math.round(dollarSize / (pricePaid || 0.50))) {
+    logger.info({
+      marketId: edge.marketId,
+      rawContracts: Math.round(dollarSize / (pricePaid || 0.50)),
+      flooredContracts: contracts,
+      kellyFraction: kellyFraction.toFixed(4),
+      dollarSize: dollarSize.toFixed(2),
+    }, `Paper position floored to ${MIN_PAPER_CONTRACTS} contracts (minimum)`);
+  }
 
   const position = await prisma.paperPosition.create({
     data: {
@@ -90,7 +115,7 @@ export async function enterPaperPosition(edge: EdgeOutput, fairValue?: number, d
       direction: edge.edgeDirection,
       entryPrice: adjustedEntryPrice,
       currentPrice: rawPrice,
-      kellySize: edge.kellySize || edge.expectedValue * 100, // fallback sizing
+      kellySize: contracts, // contracts, not fraction — P&L = priceChange × contracts
       edgeAtEntry: edge.edgeMagnitude,
       confidenceAtEntry: edge.confidence,
       fairValueAtEntry: fairValue ?? null,
@@ -105,7 +130,10 @@ export async function enterPaperPosition(edge: EdgeOutput, fairValue?: number, d
     rawPrice,
     adjustedEntryPrice,
     fee,
-  }, 'Paper position entered (fee-adjusted)');
+    kellyFraction: kellyFraction.toFixed(4),
+    contracts,
+    notional: (contracts * pricePaid).toFixed(2),
+  }, 'Paper position entered (fee-adjusted, contract-sized)');
 
   return position.id;
 }
@@ -155,7 +183,10 @@ export async function updatePaperPositions(): Promise<number> {
       : (pos.entryPrice - yesPrice) * pos.kellySize;
 
     // For open positions, show P&L with estimated exit fee deducted
-    const exitFee = estimateFee(yesPrice);
+    // Exit fee: selling what we hold. If we hold YES, buyer pays yesPrice → their fee.
+    // Our exit fee is based on what we receive: sell YES at yesPrice → fee = 0.07 × (1 - yesPrice)
+    const exitPricePaid = pos.direction === 'BUY_YES' ? yesPrice : (1 - yesPrice);
+    const exitFee = kalshiFeePerContract(exitPricePaid);
     const pnl = grossPnl - (exitFee * pos.kellySize);
 
     const updateData: Record<string, unknown> = { currentPrice: yesPrice, paperPnl: pnl };
@@ -177,13 +208,18 @@ export async function updatePaperPositions(): Promise<number> {
       }
     }
 
-    // Auto-close positions on expired markets (past closesAt with no resolution yet)
+    // Auto-close positions on expired markets — but only after 30-minute grace period
+    // to let resolution sync bring in the actual settlement outcome.
+    // Closing early at the stale market price produces wrong P&L.
     if (pos.market.closesAt && new Date(pos.market.closesAt).getTime() < Date.now()) {
-      // Market has expired but not yet resolved — close with current P&L
-      updateData.isOpen = false;
-      updateData.closedAt = new Date();
-      updateData.closeReason = 'expired';
-      logger.info({ positionId: pos.id, pnl, marketId: pos.marketId }, 'Paper position closed — market expired');
+      const expiredAgo = Date.now() - new Date(pos.market.closesAt).getTime();
+      const GRACE_PERIOD_MS = 30 * 60 * 1000;
+      if (expiredAgo >= GRACE_PERIOD_MS) {
+        updateData.isOpen = false;
+        updateData.closedAt = new Date();
+        updateData.closeReason = 'expired';
+        logger.info({ positionId: pos.id, pnl, marketId: pos.marketId }, 'Paper position closed — market expired (past 30min grace)');
+      }
     }
 
     // Flag stale positions: open >14 days with <10% edge captured

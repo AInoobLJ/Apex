@@ -1,4 +1,5 @@
 import { BaseExecutor } from './base';
+import { polymarketFee } from '@apex/shared';
 import type { OrderRequest, OrderResult } from '../types';
 
 export interface PolymarketExecutorConfig {
@@ -19,8 +20,8 @@ export class PolymarketExecutor extends BaseExecutor {
     super();
   }
 
-  calculateFee(_contracts: number, _price: number): number {
-    return 0; // Polymarket generally 0 fees for most markets
+  calculateFee(contracts: number, pricePaid: number): number {
+    return polymarketFee(pricePaid, contracts);
   }
 
   async placeOrder(_request: OrderRequest): Promise<OrderResult> {

@@ -3,8 +3,8 @@ import { Prisma } from '@apex/db';
 import { logger } from '../lib/logger';
 
 const SYSTEM_CONFIG_KEY = 'llm_daily_budget';
-const DEFAULT_DAILY_BUDGET = 5.00;  // $5/day default — research mode
-const HARD_LIMIT = 5.00;            // $5/day HARD KILL — no exceptions
+const DEFAULT_DAILY_BUDGET = 10.00; // $10/day default — research mode
+const HARD_LIMIT = 10.00;           // $10/day HARD KILL — no exceptions
 const ALERT_THRESHOLD = 0.80;       // 80% = alert
 const THROTTLE_50_THRESHOLD = 0.50; // 50% = reduce to 50 calls/hr
 const THROTTLE_80_THRESHOLD = 0.80; // 80% = reduce to 10 calls/hr
@@ -66,7 +66,7 @@ export function shouldAllowCall(task: string): { allowed: boolean; reason?: stri
     callsThisHour = 0;
   }
 
-  // HARD KILL: if daily spend >= $20, block ALL calls
+  // HARD KILL: if daily spend >= HARD_LIMIT ($5), block ALL calls
   if (cachedSpend >= HARD_LIMIT) {
     return { allowed: false, reason: `HARD LIMIT: daily spend $${cachedSpend.toFixed(2)} >= $${HARD_LIMIT} limit` };
   }
@@ -207,26 +207,55 @@ export async function getLLMBudgetStatus(): Promise<{
 }
 
 export async function setLLMDailyBudget(budget: number): Promise<void> {
+  // Clamp to HARD_LIMIT — cannot set budget higher than the code-level kill switch
+  const clampedBudget = Math.min(budget, HARD_LIMIT);
+  if (budget > HARD_LIMIT) {
+    logger.warn({ requested: budget, clamped: clampedBudget, hardLimit: HARD_LIMIT },
+      'Requested budget exceeds HARD_LIMIT — clamped');
+  }
+
   const config = await getBudgetConfig();
-  config.dailyBudget = budget;
+  config.dailyBudget = clampedBudget;
 
   await prisma.systemConfig.update({
     where: { key: SYSTEM_CONFIG_KEY },
     data: { value: toJsonValue(config) },
   });
 
-  cachedBudget = budget;
-  logger.info({ newBudget: budget }, 'LLM daily budget updated');
+  cachedBudget = clampedBudget;
+  logger.info({ newBudget: clampedBudget }, 'LLM daily budget updated');
 }
 
 /**
  * Initialize budget tracker — call on worker startup to sync from DB.
+ * Enforces HARD_LIMIT as the ceiling for dailyBudget — prevents drift
+ * from manual DB edits or legacy config values.
  */
 export async function initBudgetTracker(): Promise<void> {
-  await getBudgetConfig();
+  const config = await getBudgetConfig();
+
+  // Enforce: DB dailyBudget must not exceed HARD_LIMIT.
+  // Without this, the adaptive rate limiting (50%/80% throttle thresholds)
+  // is computed against the DB value, not the code-level hard limit.
+  // A DB value of $25 with HARD_LIMIT=$5 means throttling never triggers
+  // (calls are killed at $5, before reaching 50% of $25).
+  if (config.dailyBudget > HARD_LIMIT) {
+    logger.warn({
+      dbBudget: config.dailyBudget,
+      hardLimit: HARD_LIMIT,
+    }, 'DB dailyBudget exceeds HARD_LIMIT — clamping to HARD_LIMIT');
+    config.dailyBudget = HARD_LIMIT;
+    await prisma.systemConfig.update({
+      where: { key: SYSTEM_CONFIG_KEY },
+      data: { value: toJsonValue(config) },
+    });
+    cachedBudget = HARD_LIMIT;
+  }
+
   logger.info({
     cachedSpend: cachedSpend.toFixed(4),
     hardLimit: HARD_LIMIT,
     cachedBudget,
+    todaySpend: config.todaySpend.toFixed(4),
   }, 'LLM budget tracker initialized');
 }

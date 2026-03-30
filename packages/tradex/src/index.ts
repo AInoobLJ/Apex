@@ -3,8 +3,9 @@ export * from './types';
 
 // Core
 export { ExecutionManager } from './manager';
-export { runPreflight } from './preflight';
+export { runPreflight, checkConcentration } from './preflight';
 export type { PreflightContext } from './preflight';
+export { parseBracketTitle, groupBracketPositions, checkBracketConflict } from './bracket-detection';
 export { loadRiskLimits, saveRiskLimits, enforceHardCeilings, SYSTEM_CONFIG_KEY } from './risk-limits';
 
 // Executors

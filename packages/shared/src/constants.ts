@@ -2,9 +2,18 @@
 export { MODULE_IDS, MODULE_HALF_LIVES, DEFAULT_WEIGHTS } from './types';
 
 // ── Edge Thresholds ──
-// After Kalshi fees (~3.5% per side, ~7% round trip), edges below 3% are negative EV.
-// Paper trading at 0.5% produced misleading positive results. Minimum 3% for actionability.
-export const EDGE_ACTIONABILITY_THRESHOLD = 0.03; // 3% EV minimum — covers Kalshi round-trip fees
+// Net-edge threshold: minimum profit margin AFTER fee deduction.
+// Fees are subtracted from edgeMagnitude before this check (see cortex.ts),
+// so this represents pure profit margin.
+// Confidence is gated independently at MIN_CONFIDENCE_FOR_ACTIONABLE.
+//
+// DATA_COLLECTION_PHASE: Paper threshold lowered to 0.5% to increase trade volume
+// for FeatureModel training (needs 50+ resolved markets). Raise back to 1.5%+
+// before going live. Live threshold enforced automatically when mode switches.
+export const PAPER_EDGE_THRESHOLD = 0.005;  // 0.5% — data collection phase (paper mode)
+export const LIVE_EDGE_THRESHOLD = 0.015;   // 1.5% — production threshold (live mode)
+export const EDGE_ACTIONABILITY_THRESHOLD = PAPER_EDGE_THRESHOLD; // Active threshold — switch to LIVE_EDGE_THRESHOLD before going live
+export const EDGE_ACTIONABILITY_THRESHOLD_POLYMARKET = 0.005; // 0.5% net edge — Polymarket (data collection phase)
 export const EDGE_HIGH_THRESHOLD = 0.05;           // 5% EV — strong signal
 export const MIN_CONFIDENCE_FOR_ACTIONABLE = 0.20; // 20% confidence floor — below this is noise
 
@@ -44,7 +53,7 @@ export const JOB_SCHEDULES = {
   MARKET_SYNC: 5 * 60 * 1000,
   ORDERBOOK_SYNC: 5 * 60 * 1000,
   NEWS_INGEST: 5 * 60 * 1000,
-  SIGNAL_PIPELINE: 15 * 60 * 1000,
+  SIGNAL_PIPELINE: 5 * 60 * 1000,   // 5 min — crypto brackets need fast processing
   WALLET_PROFILE: 60 * 60 * 1000,
   WALLET_MONITOR: 5 * 60 * 1000,
   GRAPH_REBUILD: 6 * 60 * 60 * 1000,

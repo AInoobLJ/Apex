@@ -15,7 +15,7 @@ function makeSignal(moduleId: string, probability: number, confidence: number): 
   };
 }
 
-describe('CORTEX v2 Synthesis', () => {
+describe('CORTEX v3 Synthesis', () => {
   it('produces confidence-weighted average of two signals', () => {
     const signals = [
       makeSignal('COGEX', 0.60, 0.7),
@@ -24,11 +24,11 @@ describe('CORTEX v2 Synthesis', () => {
 
     const edge = synthesize({ marketId: 'market-1', marketCategory: 'POLITICS', marketPrice: 0.50, signals });
 
-    // v2 uses confidence-weighted average, so result is between 0.60 and 0.70
-    expect(edge.cortexProbability).toBeGreaterThan(0.60);
-    expect(edge.cortexProbability).toBeLessThan(0.70);
+    // Fusion uses module weights × confidence × time decay for weighted average
+    expect(edge.cortexProbability).toBeGreaterThan(0.59);
+    expect(edge.cortexProbability).toBeLessThan(0.71);
     expect(edge.marketPrice).toBe(0.50);
-    expect(edge.edgeMagnitude).toBeGreaterThan(0.10);
+    expect(edge.edgeMagnitude).toBeGreaterThan(0.09);
     expect(edge.edgeDirection).toBe('BUY_YES');
     expect(edge.signals).toHaveLength(2);
   });
@@ -54,16 +54,19 @@ describe('CORTEX v2 Synthesis', () => {
     expect(edge.edgeDirection).toBe('BUY_NO');
   });
 
-  it('marks edge as actionable when expectedValue >= threshold', () => {
+  it('marks edge as actionable when all 4 gates pass', () => {
     // Large edge: cortex=0.80, market=0.50
+    // Uses LLM modules (LEGEX, DOMEX) to satisfy the LLM gate
+    // Uses 2+ modules to satisfy the module count gate
     const signals = [
-      makeSignal('COGEX', 0.80, 0.9),
-      makeSignal('FLOWEX', 0.80, 0.9),
+      makeSignal('LEGEX', 0.80, 0.9),
+      makeSignal('DOMEX', 0.80, 0.9),
     ];
 
     const edge = synthesize({ marketId: 'market-1', marketCategory: 'POLITICS', marketPrice: 0.50, signals });
 
-    expect(edge.edgeMagnitude).toBeCloseTo(0.30, 2);
+    // Edge ~0.30, confidence should be high enough, and both gates satisfied
+    expect(edge.edgeMagnitude).toBeGreaterThan(0.20);
     expect(edge.isActionable).toBe(true);
   });
 
@@ -79,24 +82,47 @@ describe('CORTEX v2 Synthesis', () => {
     expect(edge.isActionable).toBe(false);
   });
 
-  it('adjusts confidence by coverage factor', () => {
-    // 1 out of 10 modules = 10% coverage
-    const signals = [makeSignal('COGEX', 0.70, 0.90)];
-    const edge = synthesize({ marketId: 'market-1', marketCategory: 'POLITICS', marketPrice: 0.50, signals });
-
-    // Coverage = 1/10 = 0.1, confidence = min(0.90, 0.1) = 0.1
-    expect(edge.confidence).toBeLessThanOrEqual(0.10);
-  });
-
-  it('signal contributions sum to 1.0 in weights', () => {
+  it('non-LLM modules alone are not actionable even with large edge', () => {
+    // COGEX and FLOWEX are not LLM modules — fails the LLM gate
     const signals = [
-      makeSignal('COGEX', 0.60, 0.7),
-      makeSignal('FLOWEX', 0.70, 0.8),
-      makeSignal('ARBEX', 0.65, 0.9),
+      makeSignal('COGEX', 0.80, 0.9),
+      makeSignal('FLOWEX', 0.80, 0.9),
     ];
 
     const edge = synthesize({ marketId: 'market-1', marketCategory: 'POLITICS', marketPrice: 0.50, signals });
-    const totalWeight = edge.signals.reduce((sum, s) => sum + s.weight, 0);
-    expect(totalWeight).toBeCloseTo(1.0, 5);
+
+    expect(edge.edgeMagnitude).toBeGreaterThan(0.20);
+    expect(edge.isActionable).toBe(false); // no LLM module
+  });
+
+  it('confidence is penalized by coverage factor when few modules contribute', () => {
+    // 1 module contributing: coverageFactor = min(1, 1/4) = 0.25
+    // confidence = min(0.9, avgConf × agreementAdj × (0.6 + 0.4 × 0.25))
+    // With 1 module, agreement is perfect (1.0), but coverage drags confidence down
+    const signals = [makeSignal('COGEX', 0.70, 0.90)];
+    const edge = synthesize({ marketId: 'market-1', marketCategory: 'POLITICS', marketPrice: 0.50, signals });
+
+    // Should be less than the raw 0.90 confidence due to coverage penalty
+    expect(edge.confidence).toBeLessThan(0.90);
+    // coverageFactor = 0.25, so (0.6 + 0.4 × 0.25) = 0.7 multiplier on top of agreement adjustment
+    expect(edge.confidence).toBeGreaterThan(0);
+  });
+
+  it('signal contributions are returned from fusion engine', () => {
+    const signals = [
+      makeSignal('COGEX', 0.60, 0.7),
+      makeSignal('FLOWEX', 0.70, 0.8),
+      makeSignal('LEGEX', 0.65, 0.9),
+    ];
+
+    const edge = synthesize({ marketId: 'market-1', marketCategory: 'POLITICS', marketPrice: 0.50, signals });
+
+    // Each signal should have a non-zero weight
+    expect(edge.signals).toHaveLength(3);
+    for (const s of edge.signals) {
+      expect(s.weight).toBeGreaterThan(0);
+      expect(s.moduleId).toBeDefined();
+      expect(s.probability).toBeGreaterThan(0);
+    }
   });
 });

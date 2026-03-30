@@ -2,26 +2,92 @@ import { FastifyInstance } from 'fastify';
 import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { getQueueStats } from '../jobs/queue';
+import type { HealthResponse } from '@apex/shared';
 
 const startTime = Date.now();
 
 export default async function systemRoutes(fastify: FastifyInstance) {
-  // GET /system/health — unauthenticated
+  // GET /system/health — comprehensive system health (unauthenticated)
   fastify.get('/system/health', async () => {
-    const checks = {
-      postgres: await checkPostgres(),
-      redis: await checkRedis(),
-      kalshi: await checkExternalApi('kalshi'),
-      polymarket: await checkExternalApi('polymarket'),
+    const [
+      dbCheck,
+      redisCheck,
+      kalshiCheck,
+      polymarketCheck,
+      workerStatus,
+      moduleHealth,
+      circuitBreakers,
+      budgetStatus,
+      portfolioStatus,
+    ] = await Promise.all([
+      checkPostgres(),
+      checkRedis(),
+      checkExternalApi('kalshi'),
+      checkExternalApi('polymarket'),
+      getWorkerStatus(),
+      getModuleHealth(),
+      getCircuitBreakerStatus(),
+      getBudgetStatus(),
+      getPortfolioStatus(),
+    ]);
+
+    // Determine overall status
+    const coreDown = dbCheck.status === 'down' || redisCheck.status === 'down';
+    const workerDown = workerStatus.status === 'down';
+    const budgetExceeded = budgetStatus.percentUsed >= 100;
+    const anyBreakerOpen = Object.values(circuitBreakers).some(cb => cb.state === 'OPEN');
+    const anyModuleStale = Object.values(moduleHealth).some(m => m.status === 'stale');
+
+    let status: 'healthy' | 'degraded' | 'unhealthy' = 'healthy';
+    if (coreDown || workerDown || budgetExceeded) {
+      status = 'unhealthy';
+    } else if (anyBreakerOpen || anyModuleStale) {
+      status = 'degraded';
+    }
+
+    const response: HealthResponse = {
+      status,
+      timestamp: new Date().toISOString(),
+      uptime: Math.floor((Date.now() - startTime) / 1000),
+      services: {
+        database: dbCheck,
+        redis: redisCheck,
+        worker: workerStatus,
+      },
+      platforms: {
+        kalshi: kalshiCheck,
+        polymarket: polymarketCheck,
+      },
+      modules: moduleHealth,
+      circuitBreakers,
+      budget: budgetStatus,
+      portfolio: portfolioStatus,
+      // Backward-compatible legacy field
+      checks: {
+        postgres: dbCheck,
+        redis: redisCheck,
+        kalshi: kalshiCheck,
+        polymarket: polymarketCheck,
+      },
     };
 
-    const allUp = checks.postgres.status === 'up' && checks.redis.status === 'up';
-    const anyDown = checks.postgres.status === 'down' || checks.redis.status === 'down';
+    return response;
+  });
 
+  // GET /system/ready — lightweight readiness probe for load balancers
+  fastify.get('/system/ready', async (_request, reply) => {
+    const [dbCheck, redisCheck] = await Promise.all([
+      checkPostgres(),
+      checkRedis(),
+    ]);
+
+    const ready = dbCheck.status === 'up' && redisCheck.status === 'up';
+
+    reply.code(ready ? 200 : 503);
     return {
-      status: anyDown ? 'unhealthy' : allUp ? 'healthy' : 'degraded',
-      checks,
-      uptime: Math.floor((Date.now() - startTime) / 1000),
+      ready,
+      database: dbCheck.status,
+      redis: redisCheck.status,
     };
   });
 
@@ -76,6 +142,46 @@ export default async function systemRoutes(fastify: FastifyInstance) {
     return { synced, durationMs: Date.now() - start };
   });
 
+  // POST /system/trigger-resolution-sync — manually trigger resolution sync for settled markets
+  // This fetches recently-settled markets from Kalshi and updates their resolution outcomes.
+  // Critical for: FeatureModel training, hit rate tracking, calibration, P&L finalization.
+  fastify.post('/system/trigger-resolution-sync', async () => {
+    const { syncResolutions, syncPositionResolutions } = await import('../services/market-sync');
+    const { reconcilePositions } = await import('../services/position-sync');
+    const start = Date.now();
+
+    // Step 1: Fetch resolution outcomes from Kalshi (broad sweep)
+    const resolutions = await syncResolutions();
+
+    // Step 1b: Targeted sync for markets we hold positions on
+    const targeted = await syncPositionResolutions();
+
+    // Step 2: Run position reconciliation to close positions + link training snapshots
+    const reconciled = await reconcilePositions();
+
+    // Step 3: Count how many training snapshots now have outcomes
+    const labeledSnapshots = await prisma.trainingSnapshot.count({ where: { outcome: { not: null } } });
+    const unlabeledSnapshots = await prisma.trainingSnapshot.count({ where: { outcome: null } });
+
+    // Step 4: Count resolved markets and positions
+    const resolvedMarkets = await prisma.market.count({ where: { resolution: { not: null } } });
+    const resolvedPositions = await prisma.paperPosition.count({ where: { closeReason: 'RESOLVED' } });
+
+    return {
+      durationMs: Date.now() - start,
+      resolutionsFound: resolutions,
+      targetedResolutions: targeted,
+      positionsReconciled: reconciled.synced,
+      resolvedMarkets,
+      resolvedPositions,
+      trainingData: {
+        labeled: labeledSnapshots,
+        unlabeled: unlabeledSnapshots,
+        readyForTraining: labeledSnapshots >= 50,
+      },
+    };
+  });
+
   // GET /system/circuit-breakers — status of all circuit breakers
   fastify.get('/system/circuit-breakers', async () => {
     const { getAllCircuitBreakers } = await import('../lib/circuit-breaker');
@@ -121,7 +227,7 @@ export default async function systemRoutes(fastify: FastifyInstance) {
         totalTokensOut,
         byEndpoint,
       },
-      budget: parseFloat(process.env.LLM_DAILY_BUDGET || '25'),
+      budget: parseFloat(process.env.LLM_DAILY_BUDGET || '10'),
       optimization: (() => {
         try {
           const { getCostOptimizationStats } = require('../services/claude-client');
@@ -206,7 +312,7 @@ export default async function systemRoutes(fastify: FastifyInstance) {
       ? recentDays.reduce((sum, [, d]) => sum + d.cost, 0) / recentDays.length
       : 0;
 
-    const budget = parseFloat(process.env.LLM_DAILY_BUDGET || '25');
+    const budget = parseFloat(process.env.LLM_DAILY_BUDGET || '10');
 
     // Project next 7 days
     const forecast = [];
@@ -228,12 +334,18 @@ export default async function systemRoutes(fastify: FastifyInstance) {
   // GET /system/data-sources — status of all external data feeds
   fastify.get('/system/data-sources', async () => {
     const { binanceWs } = await import('../services/data-sources/binance-ws');
+    const { deribit } = await import('../services/data-sources/deribit');
 
     const sources: Record<string, any> = {
       binance_ws: {
-        name: 'Binance WebSocket',
+        name: 'Coinbase WebSocket',
         type: 'real-time',
         ...binanceWs.getStatus(),
+      },
+      deribit: {
+        name: 'Deribit Options (DVOL)',
+        type: 'polling',
+        ...deribit.getStatus(),
       },
       coingecko: {
         name: 'CoinGecko',
@@ -263,6 +375,88 @@ export default async function systemRoutes(fastify: FastifyInstance) {
     };
 
     return { dataSources: sources };
+  });
+
+  // GET /system/training-status — training data collection + model + calibration status
+  fastify.get('/system/training-status', async () => {
+    const [
+      totalSnapshots,
+      resolvedSnapshots,
+      unresolvedSnapshots,
+      snapshotsByCategory,
+      calibrationResults,
+      modelConfig,
+      directionCounts,
+    ] = await Promise.all([
+      prisma.trainingSnapshot.count(),
+      prisma.trainingSnapshot.count({ where: { outcome: { not: null } } }),
+      prisma.trainingSnapshot.count({ where: { outcome: null } }),
+      prisma.trainingSnapshot.groupBy({
+        by: ['marketCategory'],
+        _count: true,
+        where: { outcome: { not: null } },
+      }),
+      prisma.calibrationResult.findMany({ orderBy: { bucket: 'asc' } }),
+      prisma.systemConfig.findUnique({ where: { key: 'feature_model_weights' } }),
+      prisma.trainingSnapshot.groupBy({
+        by: ['edgeDirection'],
+        _count: true,
+        where: { createdAt: { gte: new Date(Date.now() - 7 * 86400000) } },
+      }),
+    ]);
+
+    // Parse model info
+    let modelStatus: { status: string; sampleSize: number; validationAccuracy: number; trainedAt: string | null } = {
+      status: 'untrained',
+      sampleSize: 0,
+      validationAccuracy: 0,
+      trainedAt: null,
+    };
+    if (modelConfig?.value) {
+      try {
+        const weights = typeof modelConfig.value === 'string'
+          ? JSON.parse(modelConfig.value)
+          : modelConfig.value;
+        modelStatus = {
+          status: weights.sampleSize > 0 ? 'trained' : 'untrained',
+          sampleSize: weights.sampleSize || 0,
+          validationAccuracy: weights.validationAccuracy || 0,
+          trainedAt: weights.trainedAt || null,
+        };
+      } catch { /* keep defaults */ }
+    }
+
+    // BUY_YES vs BUY_NO ratio (last 7 days)
+    const buyYes = directionCounts.find(d => d.edgeDirection === 'BUY_YES')?._count ?? 0;
+    const buyNo = directionCounts.find(d => d.edgeDirection === 'BUY_NO')?._count ?? 0;
+    const totalDirectional = buyYes + buyNo;
+
+    return {
+      trainingData: {
+        totalSnapshots,
+        resolvedSnapshots,
+        unresolvedSnapshots,
+        byCategory: snapshotsByCategory.map(s => ({
+          category: s.marketCategory,
+          count: s._count,
+        })),
+      },
+      featureModel: modelStatus,
+      calibration: calibrationResults.map(r => ({
+        bucket: r.bucketLabel,
+        positions: r.positionCount,
+        wins: r.winCount,
+        predictedAvg: Math.round(r.predictedAvg * 1000) / 10,
+        actualWinRate: Math.round(r.actualWinRate * 1000) / 10,
+        calibrationError: Math.round(r.calibrationError * 1000) / 10,
+      })),
+      directionalBalance: {
+        buyYes,
+        buyNo,
+        total: totalDirectional,
+        yesRatio: totalDirectional > 0 ? Math.round((buyYes / totalDirectional) * 100) : 0,
+      },
+    };
   });
 }
 
@@ -331,5 +525,143 @@ async function checkExternalApi(service: string): Promise<{ status: 'up' | 'down
     return { status: ageMinutes < 30 ? 'syncing' : 'down', lastSuccessAt: lastSuccess.createdAt.toISOString() };
   } catch {
     return { status: 'unknown', lastSuccessAt: null };
+  }
+}
+
+// ── Worker Status ──
+
+async function getWorkerStatus(): Promise<{
+  status: 'up' | 'down' | 'idle';
+  activeJobs: number;
+  lastJobCompleted: string | null;
+  failedJobs24h: number;
+}> {
+  try {
+    const stats = await getQueueStats();
+    const totalActive = stats.reduce((sum, q) => sum + q.active, 0);
+    const totalFailed = stats.reduce((sum, q) => sum + q.failed, 0);
+    const totalCompleted = stats.reduce((sum, q) => sum + q.completed, 0);
+
+    // Check if any jobs have completed (worker is processing)
+    const isProcessing = totalActive > 0 || totalCompleted > 0;
+
+    return {
+      status: isProcessing ? 'up' : (totalFailed > 0 ? 'down' : 'idle'),
+      activeJobs: totalActive,
+      lastJobCompleted: null, // BullMQ doesn't expose this directly without job scanning
+      failedJobs24h: totalFailed,
+    };
+  } catch {
+    return { status: 'down', activeJobs: 0, lastJobCompleted: null, failedJobs24h: 0 };
+  }
+}
+
+// ── Module Health ──
+
+const ALL_MODULES = ['COGEX', 'FLOWEX', 'LEGEX', 'DOMEX', 'ALTEX', 'REFLEX', 'SPEEDEX', 'ARBEX', 'SIGINT', 'NEXUS'] as const;
+
+async function getModuleHealth(): Promise<Record<string, { status: 'healthy' | 'stale' | 'inactive'; signalsLast24h: number; lastActive: string | null }>> {
+  const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+  // Single query: count signals per module in last 24h and get latest timestamp
+  const moduleStats = await prisma.signal.groupBy({
+    by: ['moduleId'],
+    where: { createdAt: { gte: oneDayAgo } },
+    _count: true,
+    _max: { createdAt: true },
+  });
+
+  const statsMap = new Map(
+    moduleStats.map(s => [s.moduleId, { count: s._count, lastActive: s._max.createdAt }])
+  );
+
+  const result: Record<string, { status: 'healthy' | 'stale' | 'inactive'; signalsLast24h: number; lastActive: string | null }> = {};
+
+  for (const moduleId of ALL_MODULES) {
+    const stat = statsMap.get(moduleId);
+    if (!stat || stat.count === 0) {
+      result[moduleId] = { status: 'inactive', signalsLast24h: 0, lastActive: null };
+    } else {
+      const minutesSince = stat.lastActive
+        ? (Date.now() - stat.lastActive.getTime()) / 60000
+        : Infinity;
+      // Stale if last signal > 2 hours ago (modules should produce signals each 15min cycle)
+      const status = minutesSince < 120 ? 'healthy' : 'stale';
+      result[moduleId] = {
+        status,
+        signalsLast24h: stat.count,
+        lastActive: stat.lastActive?.toISOString() ?? null,
+      };
+    }
+  }
+
+  return result;
+}
+
+// ── Circuit Breaker Status ──
+
+async function getCircuitBreakerStatus(): Promise<Record<string, { state: 'CLOSED' | 'OPEN' | 'HALF_OPEN'; failures: number; totalFailures: number; totalSuccesses: number }>> {
+  try {
+    const { getAllCircuitBreakers } = await import('../lib/circuit-breaker');
+    const breakers = getAllCircuitBreakers();
+    const result: Record<string, { state: 'CLOSED' | 'OPEN' | 'HALF_OPEN'; failures: number; totalFailures: number; totalSuccesses: number }> = {};
+    for (const [name, info] of Object.entries(breakers)) {
+      result[name] = {
+        state: info.state as 'CLOSED' | 'OPEN' | 'HALF_OPEN',
+        failures: info.failures,
+        totalFailures: info.totalFailures,
+        totalSuccesses: info.totalSuccesses,
+      };
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+// ── Budget Status ──
+
+async function getBudgetStatus(): Promise<{ dailySpent: number; dailyLimit: number; percentUsed: number; hardLimit: number }> {
+  try {
+    const { getLLMBudgetStatus } = await import('../services/llm-budget-tracker');
+    const budget = await getLLMBudgetStatus();
+    return {
+      dailySpent: Math.round(budget.todaySpend * 100) / 100,
+      dailyLimit: budget.dailyBudget,
+      percentUsed: budget.percentUsed,
+      hardLimit: budget.hardLimit,
+    };
+  } catch {
+    return { dailySpent: 0, dailyLimit: 10, percentUsed: 0, hardLimit: 10 };
+  }
+}
+
+// ── Portfolio Status ──
+
+async function getPortfolioStatus(): Promise<{ paperPositions: number; totalDeployed: number; unrealizedPnl: number; tradesToday: number }> {
+  try {
+    const positions = await prisma.paperPosition.findMany({
+      where: { isOpen: true },
+    });
+
+    const totalDeployed = positions.reduce((sum, p) => sum + p.kellySize * p.entryPrice, 0);
+    const unrealizedPnl = positions.reduce((sum, p) => {
+      const currentValue = p.kellySize * p.currentPrice;
+      const entryValue = p.kellySize * p.entryPrice;
+      return sum + (currentValue - entryValue);
+    }, 0);
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tradesToday = await prisma.paperPosition.count({ where: { createdAt: { gte: today } } });
+
+    return {
+      paperPositions: positions.length,
+      totalDeployed: Math.round(totalDeployed * 100) / 100,
+      unrealizedPnl: Math.round(unrealizedPnl * 100) / 100,
+      tradesToday,
+    };
+  } catch {
+    return { paperPositions: 0, totalDeployed: 0, unrealizedPnl: 0, tradesToday: 0 };
   }
 }

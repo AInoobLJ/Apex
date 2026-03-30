@@ -269,10 +269,25 @@ export function predict(fv: FeatureVector): { probability: number; confidence: n
   const flat = flattenFeatures(fv);
   const model = currentModel;
 
+  // ── DEBIASING: Untrained model must not inject directional bias ──
+  // With default weights and unnormalized features (eloRating~1500, fedFundsRate~5.25),
+  // sigmoid(sum of positive weights × large values) ≈ 1.0 for virtually every market.
+  // This caused 17/17 BUY_YES positions. When untrained, return marketPrice as the
+  // probability (no edge) with minimal confidence. The model only adds value once it
+  // has been trained on resolved markets with enough data to learn real feature effects.
+  const isUntrained = model.sampleSize < MIN_TRAINING_SAMPLES;
+  if (isUntrained) {
+    return {
+      probability: Math.max(0.01, Math.min(0.99, fv.marketPrice)),
+      confidence: 0.05, // minimal — untrained model has no predictive power
+      featureImportance: [],
+    };
+  }
+
   // Validate model weights aren't corrupted (NaN/Infinity)
   if (!Number.isFinite(model.intercept)) {
     console.warn('[FeatureModel.predict] Model intercept is NaN/Infinity — falling back to prior');
-    return { probability: 0.5, confidence: 0.1, featureImportance: [] };
+    return { probability: fv.marketPrice, confidence: 0.05, featureImportance: [] };
   }
 
   let logit = model.intercept;
@@ -292,10 +307,10 @@ export function predict(fv: FeatureVector): { probability: number; confidence: n
     }
   }
 
-  // If logit is NaN/Infinity (corrupted model), fall back to prior
+  // If logit is NaN/Infinity (corrupted model), fall back to market price
   if (!Number.isFinite(logit)) {
-    console.warn('[FeatureModel.predict] Logit is NaN/Infinity — falling back to prior');
-    return { probability: 0.5, confidence: 0.1, featureImportance: [] };
+    console.warn('[FeatureModel.predict] Logit is NaN/Infinity — falling back to market price');
+    return { probability: fv.marketPrice, confidence: 0.05, featureImportance: [] };
   }
 
   const probability = Math.max(0.01, Math.min(0.99, sigmoid(logit)));

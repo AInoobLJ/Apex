@@ -14,7 +14,7 @@ export interface MarketMatch {
 
 // ── Text Similarity (free, fast) ──
 
-function normalizeText(text: string): string {
+export function normalizeText(text: string): string {
   return text
     .toLowerCase()
     .replace(/[^\w\s]/g, '')
@@ -22,7 +22,7 @@ function normalizeText(text: string): string {
     .trim();
 }
 
-function jaccardSimilarity(a: string, b: string): number {
+export function jaccardSimilarity(a: string, b: string): number {
   const wordsA = new Set(normalizeText(a).split(' '));
   const wordsB = new Set(normalizeText(b).split(' '));
   const intersection = new Set([...wordsA].filter(w => wordsB.has(w)));
@@ -154,8 +154,14 @@ export async function matchNewMarket(
  * Pure DB read — zero LLM calls.
  */
 export async function getPrecomputedMatches(minConfidence: number = 0.60): Promise<MarketMatch[]> {
+  const now = new Date();
   const dbMatches = await prisma.marketMatch.findMany({
-    where: { matchConfidence: { gte: minConfidence } },
+    where: {
+      matchConfidence: { gte: minConfidence },
+      // Only return matches where BOTH markets are still active and not expired
+      kalshiMarket: { status: 'ACTIVE', closesAt: { gt: now } },
+      polymarketMarket: { status: 'ACTIVE', closesAt: { gt: now } },
+    },
     include: {
       kalshiMarket: { select: { id: true, title: true } },
       polymarketMarket: { select: { id: true, title: true } },

@@ -4,3 +4,4 @@ export * from './utils';
 export * from './platform-adapter';
 export * from './llm-router';
 export * from './module-interfaces';
+export * from './fees';

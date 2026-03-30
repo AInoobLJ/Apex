@@ -29,11 +29,14 @@ const envSchema = z.object({
   LLM_DAILY_BUDGET: z.coerce.number().default(10.00),
 
   // Data Sources
-  BINANCE_WS_ENABLED: z.coerce.boolean().default(false), // Binance.com blocked in US — use CoinGecko fallback
+  BINANCE_WS_ENABLED: z.coerce.boolean().default(true), // Binance.US WebSocket — no geo-blocking for US users
   FRED_API_KEY: z.string().default(''),
   CONGRESS_API_KEY: z.string().default(''),
   ODDS_API_KEY: z.string().default(''),       // The Odds API (the-odds-api.com) — free tier
   FINNHUB_API_KEY: z.string().default(''),     // Finnhub (finnhub.io) — free tier
+
+  // Pipeline focus — comma-separated categories (empty = all categories)
+  APEX_ACTIVE_CATEGORIES: z.string().default('CRYPTO,SPORTS'),
 
   // Server
   PORT: z.coerce.number().default(3001),

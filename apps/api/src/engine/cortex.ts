@@ -1,11 +1,12 @@
-import { SignalOutput, EdgeOutput, SignalContribution, clampProbability, ModuleId } from '@apex/shared';
+import { SignalOutput, EdgeOutput, SignalContribution, clampProbability, ModuleId, kalshiFeePerContract } from '@apex/shared';
 import { EDGE_ACTIONABILITY_THRESHOLD, MIN_CONFIDENCE_FOR_ACTIONABLE } from '@apex/shared';
 import { syncPrisma as prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
-import { applyCalibration, fuseSignals, RawSignal } from '@apex/cortex';
+import { applyCalibration, fuseSignals, RawSignal, ModuleScoreInput } from '@apex/cortex';
 
 // LLM modules that analyze the actual event (not just statistical patterns)
-const LLM_MODULES = new Set<string>(['LEGEX', 'DOMEX', 'ALTEX', 'REFLEX']);
+// REFLEX removed — disabled in V3 review (Grade D, no real data source)
+const LLM_MODULES = new Set<string>(['LEGEX', 'DOMEX', 'ALTEX']);
 
 // Minimum requirements for an edge to be actionable:
 // 1. At least 2 modules contributed probability signals
@@ -19,6 +20,7 @@ export interface CortexInput {
   marketCategory: string;
   signals: SignalOutput[];
   closesAt?: Date | null;
+  moduleScores?: ModuleScoreInput[];
 }
 
 /**
@@ -29,7 +31,7 @@ export interface CortexInput {
  * Adds calibration corrections (pre-fusion) and Kelly sizing (post-fusion).
  */
 export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution: number; capitalEfficiency: number } {
-  const { signals, marketPrice, marketId, marketCategory, closesAt } = input;
+  const { signals, marketPrice, marketId, marketCategory, closesAt, moduleScores } = input;
 
   // Calculate days to resolution
   const daysToResolution = closesAt
@@ -54,9 +56,10 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
   });
 
   // ── Stage 2: Signal Fusion (canonical engine) ──
-  // Filter out ARBEX/SPEEDEX from probability synthesis (they produce arb signals, not probability)
+  // Filter out ARBEX from probability synthesis (produces arb spread signals, not probability).
+  // SPEEDEX is INCLUDED — it produces real probability estimates from Black-Scholes pricing.
   const probabilitySignals = calibratedSignals.filter(
-    s => s.moduleId !== 'ARBEX' && s.moduleId !== 'SPEEDEX'
+    s => s.moduleId !== 'ARBEX'
   );
 
   if (probabilitySignals.length === 0) {
@@ -73,7 +76,7 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
     metadata: s.metadata as Record<string, unknown> | undefined,
   }));
 
-  const fused = fuseSignals(rawSignals);
+  const fused = fuseSignals(rawSignals, moduleScores?.length ? { moduleScores } : undefined);
 
   // ── Stage 3: Edge Calculation ──
   const cortexProbability = clampProbability(fused.probability);
@@ -82,12 +85,14 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
   const edgeMagnitude = Math.abs(cortexProbability - marketPrice);
   const edgeDirection = cortexProbability > marketPrice ? 'BUY_YES' as const : 'BUY_NO' as const;
 
-  // Fee-aware EV: deduct estimated round-trip fees from edge before multiplying by confidence.
-  // Kalshi fee = 7% of profit per side. Conservative estimate: 0.07 × (1 - entryPrice) entry side.
-  // We don't have platform here, so use Kalshi (worst-case) fees as conservative estimate.
-  const entryPrice = edgeDirection === 'BUY_YES' ? marketPrice : (1 - marketPrice);
-  const estimatedFee = 0.07 * Math.max(0, 1 - entryPrice);
+  // Fee-aware edge: deduct estimated Kalshi fee (worst-case) from raw edge.
+  // Fee = 0.07 × (1 - pricePaid), where pricePaid is what we pay for the contract.
+  const pricePaid = edgeDirection === 'BUY_YES' ? marketPrice : (1 - marketPrice);
+  const estimatedFee = kalshiFeePerContract(pricePaid);
   const netEdge = Math.max(0, edgeMagnitude - estimatedFee);
+  // EV = confidence-weighted net edge. Used for ranking/display.
+  // Actionability threshold gates on netEdge directly (fees already deducted),
+  // with confidence gated independently at MIN_CONFIDENCE_FOR_ACTIONABLE.
   const expectedValue = netEdge * confidence;
   const capitalEfficiency = netEdge / Math.sqrt(daysToResolution);
 
@@ -115,22 +120,41 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
 
   // ── Actionability Gate ──
   // Must pass ALL four checks:
-  // 1. EV exceeds fee-adjusted threshold (3%)
+  // 1. Net edge (after fee deduction) exceeds minimum profit threshold
+  //    Gate on netEdge directly — fees are already deducted, so this is pure profit margin.
+  //    Confidence is checked independently (gate 2), not multiplied into the threshold.
   // 2. Confidence meets minimum floor (20%) — below this is noise
   // 3. At least 2 modules contributed probability signals
   // 4. At least 1 LLM module contributed (pure stats alone can't analyze the event)
   const moduleCount = probabilitySignals.length;
   const llmModuleCount = probabilitySignals.filter(s => LLM_MODULES.has(s.moduleId)).length;
-  const evMeetsThreshold = expectedValue >= EDGE_ACTIONABILITY_THRESHOLD;
+  const speedexSignal = probabilitySignals.find(s => s.moduleId === 'SPEEDEX');
+  const hasSpeedex = !!speedexSignal;
+  const evMeetsThreshold = netEdge >= EDGE_ACTIONABILITY_THRESHOLD;
   const confidenceMeetsThreshold = confidence >= MIN_CONFIDENCE_FOR_ACTIONABLE;
-  const hasEnoughModules = moduleCount >= MIN_MODULES_FOR_ACTIONABLE;
-  const hasLLMModule = llmModuleCount >= MIN_LLM_MODULES_FOR_ACTIONABLE;
+
+  // SPEEDEX solo override: Black-Scholes on crypto brackets is mathematically rigorous.
+  // When SPEEDEX has a strong edge (>= 15%) with decent confidence (>= 40%),
+  // it can trade as a single module — no LLM or multi-module confirmation needed.
+  const speedexSoloEligible = marketCategory === 'CRYPTO' && hasSpeedex
+    && edgeMagnitude >= 0.15 && (speedexSignal?.confidence ?? 0) >= 0.40;
+
+  const hasEnoughModules = moduleCount >= MIN_MODULES_FOR_ACTIONABLE || speedexSoloEligible;
+  const hasLLMModule = llmModuleCount >= MIN_LLM_MODULES_FOR_ACTIONABLE
+    || (marketCategory === 'CRYPTO' && hasSpeedex);
   const isActionable = evMeetsThreshold && confidenceMeetsThreshold && hasEnoughModules && hasLLMModule;
+
+  if (isActionable && speedexSoloEligible && moduleCount < MIN_MODULES_FOR_ACTIONABLE) {
+    logger.info({
+      marketId, edge: edgeMagnitude.toFixed(3), confidence: confidence.toFixed(3),
+      direction: edgeDirection, modules: moduleCount,
+    }, `SPEEDEX_SOLO: single-module override (edge=${(edgeMagnitude * 100).toFixed(1)}%, conf=${(confidence * 100).toFixed(0)}%)`);
+  }
 
   // ── Build "Why is this actionable?" summary ──
   const actionabilitySummary = buildActionabilitySummary({
     cortexProbability, marketPrice, edgeMagnitude, edgeDirection, confidence,
-    expectedValue, moduleCount, llmModuleCount, signalContributions,
+    expectedValue, netEdge, moduleCount, llmModuleCount, signalContributions,
     evMeetsThreshold, confidenceMeetsThreshold, hasEnoughModules, hasLLMModule, isActionable,
   });
 
@@ -155,6 +179,7 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
     isActionable,
     conflictFlag,
     timestamp: new Date(),
+    marketCategory,
     daysToResolution,
     capitalEfficiency,
     actionabilitySummary,
@@ -166,7 +191,7 @@ export function synthesize(input: CortexInput): EdgeOutput & { daysToResolution:
  */
 function buildActionabilitySummary(params: {
   cortexProbability: number; marketPrice: number; edgeMagnitude: number;
-  edgeDirection: string; confidence: number; expectedValue: number;
+  edgeDirection: string; confidence: number; expectedValue: number; netEdge: number;
   moduleCount: number; llmModuleCount: number;
   signalContributions: SignalContribution[];
   evMeetsThreshold: boolean; confidenceMeetsThreshold: boolean; hasEnoughModules: boolean; hasLLMModule: boolean;
@@ -174,7 +199,7 @@ function buildActionabilitySummary(params: {
 }): string {
   const {
     cortexProbability, marketPrice, edgeMagnitude, edgeDirection, confidence,
-    expectedValue, moduleCount, llmModuleCount, signalContributions,
+    expectedValue, netEdge, moduleCount, llmModuleCount, signalContributions,
     evMeetsThreshold, confidenceMeetsThreshold, hasEnoughModules, hasLLMModule, isActionable,
   } = params;
 
@@ -201,10 +226,10 @@ function buildActionabilitySummary(params: {
   // Actionability checks
   if (!isActionable) {
     const failures: string[] = [];
-    if (!evMeetsThreshold) failures.push(`EV ${(expectedValue * 100).toFixed(2)}% below 3% threshold`);
+    if (!evMeetsThreshold) failures.push(`net edge ${(netEdge * 100).toFixed(2)}% below ${(EDGE_ACTIONABILITY_THRESHOLD * 100).toFixed(1)}% threshold (after fees)`);
     if (!confidenceMeetsThreshold) failures.push(`confidence ${(confidence * 100).toFixed(0)}% below 20% minimum`);
     if (!hasEnoughModules) failures.push(`only ${moduleCount} module(s) — need at least 2`);
-    if (!hasLLMModule) failures.push(`no LLM modules (LEGEX/DOMEX/ALTEX/REFLEX) — pure stats alone cannot determine actionability`);
+    if (!hasLLMModule) failures.push(`no LLM modules (LEGEX/DOMEX/ALTEX) — pure stats alone cannot determine actionability`);
     parts.push(`NOT ACTIONABLE: ${failures.join('; ')}.`);
   }
 
@@ -225,6 +250,7 @@ function makeNullEdge(marketId: string, marketPrice: number): EdgeOutput {
     isActionable: false,
     conflictFlag: false,
     timestamp: new Date(),
+    marketCategory: 'OTHER',
   };
 }
 
@@ -255,4 +281,59 @@ export async function persistEdge(edge: EdgeOutput): Promise<string> {
   );
 
   return record.id;
+}
+
+/**
+ * Save a training snapshot: feature vectors + module outputs for this synthesis.
+ * Append-only — this builds the labeled dataset the FeatureModel needs to train.
+ * Resolution outcomes are linked later when markets resolve.
+ */
+export async function persistTrainingSnapshot(
+  edge: EdgeOutput & { daysToResolution: number },
+  signals: SignalOutput[]
+): Promise<void> {
+  try {
+    // Build module outputs map: { COGEX: { prob, conf }, DOMEX: { prob, conf }, ... }
+    const moduleOutputs: Record<string, { probability: number; confidence: number }> = {};
+    for (const sig of signals) {
+      moduleOutputs[sig.moduleId] = {
+        probability: sig.probability,
+        confidence: sig.confidence,
+      };
+    }
+
+    // Extract feature vector from DOMEX signal if available
+    const domexSignal = signals.find(s => s.moduleId === 'DOMEX');
+    let featureVector: object | null = null;
+    let featureSchemaVersion: number | null = null;
+    if (domexSignal?.metadata) {
+      const meta = domexSignal.metadata as Record<string, unknown>;
+      if (meta.featureVector) {
+        featureVector = meta.featureVector as object;
+      }
+      if (typeof meta.featureSchemaVersion === 'number') {
+        featureSchemaVersion = meta.featureSchemaVersion;
+      }
+    }
+
+    await prisma.trainingSnapshot.create({
+      data: {
+        marketId: edge.marketId,
+        cortexProbability: edge.cortexProbability,
+        marketPrice: edge.marketPrice,
+        edgeDirection: edge.edgeDirection,
+        edgeMagnitude: edge.edgeMagnitude,
+        confidence: edge.confidence,
+        daysToResolution: edge.daysToResolution,
+        marketCategory: edge.marketCategory ?? 'OTHER',
+        moduleOutputs: moduleOutputs as unknown as object,
+        featureVector: featureVector as unknown as object ?? undefined,
+        featureSchemaVersion,
+        // outcome + resolvedAt are null — filled when market resolves
+      },
+    });
+  } catch (err) {
+    // Non-fatal — don't block the pipeline if snapshot save fails
+    logger.warn({ err, marketId: edge.marketId }, 'Failed to save training snapshot');
+  }
 }

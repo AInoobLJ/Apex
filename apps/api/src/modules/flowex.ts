@@ -169,7 +169,8 @@ export class FlowexModule extends SignalModule {
   }
 }
 
-export const flowexModule = new FlowexModule();
+import { PrismaDataProvider } from '../providers/prisma-data-provider';
+export const flowexModule = new FlowexModule({ dataProvider: new PrismaDataProvider() });
 
 export function createFlowexModule(deps: ModuleDeps) {
   return new FlowexModule(deps);

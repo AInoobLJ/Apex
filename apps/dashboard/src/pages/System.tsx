@@ -36,6 +36,13 @@ const jobColumns: Column<Record<string, unknown>>[] = [
   { key: 'delayed', label: 'Delayed', align: 'right', width: '80px' },
 ];
 
+type TrainingStatus = {
+  trainingData: { totalSnapshots: number; resolvedSnapshots: number; unresolvedSnapshots: number; byCategory: { category: string; count: number }[] };
+  featureModel: { status: string; sampleSize: number; validationAccuracy: number; trainedAt: string | null };
+  calibration: { bucket: string; positions: number; wins: number; predictedAvg: number; actualWinRate: number; calibrationError: number }[];
+  directionalBalance: { buyYes: number; buyNo: number; total: number; yesRatio: number };
+};
+
 export function System() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [jobs, setJobs] = useState<JobStatusResponse | null>(null);
@@ -45,6 +52,7 @@ export function System() {
   const [apiUsage, setApiUsage] = useState<{ today: { totalCost: number; totalCalls: number; totalTokensIn: number; totalTokensOut: number }; budget: number } | null>(null);
   const [jobErrors, setJobErrors] = useState<JobError[] | null>(null);
   const [costForecast, setCostForecast] = useState<CostForecast | null>(null);
+  const [trainingStatus, setTrainingStatus] = useState<TrainingStatus | null>(null);
   const [expandedQueue, setExpandedQueue] = useState<string | null>(null);
 
   useEffect(() => {
@@ -55,13 +63,15 @@ export function System() {
       api.getApiUsage().catch(() => null),
       api.getJobErrors().catch(() => null),
       api.getCostForecast().catch(() => null),
-    ]).then(([h, j, m, u, errs, forecast]) => {
+      api.getTrainingStatus().catch(() => null),
+    ]).then(([h, j, m, u, errs, forecast, training]) => {
       setHealth(h);
       setJobs(j);
       setModules(m?.modules ?? null);
       setApiUsage(u);
       setJobErrors(errs?.errors ?? null);
       setCostForecast(forecast);
+      setTrainingStatus(training);
       setLoading(false);
     });
   }, []);
@@ -82,25 +92,74 @@ export function System() {
     <div>
       <h1 style={{ fontFamily: fonts.mono, fontSize: '20px', marginBottom: '24px' }}>System Monitor</h1>
 
-      {/* Health cards */}
+      {/* Overall status banner */}
+      {health && (
+        <div style={{
+          marginBottom: '24px', display: 'flex', alignItems: 'center', gap: '12px',
+          padding: '12px 16px', borderRadius: '8px',
+          backgroundColor: health.status === 'healthy' ? colors.green + '10' : health.status === 'degraded' ? colors.yellow + '10' : colors.red + '10',
+          border: `1px solid ${health.status === 'healthy' ? colors.green + '40' : health.status === 'degraded' ? colors.yellow + '40' : colors.red + '40'}`,
+        }}>
+          <StatusBadge status={health.status} />
+          <span style={{ color: colors.textMuted, fontSize: '13px', fontFamily: fonts.mono }}>
+            Uptime: {Math.floor(health.uptime / 3600)}h {Math.floor((health.uptime % 3600) / 60)}m
+          </span>
+          {health.timestamp && (
+            <span style={{ color: colors.textMuted, fontSize: '11px', marginLeft: 'auto' }}>
+              {new Date(health.timestamp).toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Core services */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '32px' }}>
-        {health && Object.entries(health.checks).map(([name, check]) => (
+        {health?.services && (
+          <>
+            <div style={{
+              backgroundColor: colors.bgSecondary,
+              border: `1px solid ${health.services.database.status === 'up' ? colors.green + '40' : colors.red + '40'}`,
+              borderRadius: '8px', padding: '16px',
+            }}>
+              <div style={{ fontSize: '12px', color: colors.textSecondary, textTransform: 'uppercase', marginBottom: '8px' }}>Database</div>
+              <StatusBadge status={health.services.database.status} />
+              <div style={{ fontSize: '11px', color: colors.textMuted, marginTop: '8px', fontFamily: fonts.mono }}>
+                {health.services.database.latencyMs}ms
+              </div>
+            </div>
+            <div style={{
+              backgroundColor: colors.bgSecondary,
+              border: `1px solid ${health.services.redis.status === 'up' ? colors.green + '40' : colors.red + '40'}`,
+              borderRadius: '8px', padding: '16px',
+            }}>
+              <div style={{ fontSize: '12px', color: colors.textSecondary, textTransform: 'uppercase', marginBottom: '8px' }}>Redis</div>
+              <StatusBadge status={health.services.redis.status} />
+              <div style={{ fontSize: '11px', color: colors.textMuted, marginTop: '8px', fontFamily: fonts.mono }}>
+                {health.services.redis.latencyMs}ms
+              </div>
+            </div>
+            <div style={{
+              backgroundColor: colors.bgSecondary,
+              border: `1px solid ${health.services.worker.status === 'up' ? colors.green + '40' : health.services.worker.status === 'idle' ? colors.yellow + '40' : colors.red + '40'}`,
+              borderRadius: '8px', padding: '16px',
+            }}>
+              <div style={{ fontSize: '12px', color: colors.textSecondary, textTransform: 'uppercase', marginBottom: '8px' }}>Worker</div>
+              <StatusBadge status={health.services.worker.status === 'up' ? 'up' : health.services.worker.status === 'idle' ? 'unknown' : 'down'} label={health.services.worker.status.toUpperCase()} />
+              <div style={{ fontSize: '11px', color: colors.textMuted, marginTop: '8px', fontFamily: fonts.mono }}>
+                {health.services.worker.activeJobs} active jobs
+              </div>
+            </div>
+          </>
+        )}
+        {health?.platforms && Object.entries(health.platforms).map(([name, check]) => (
           <div key={name} style={{
             backgroundColor: colors.bgSecondary,
             border: `1px solid ${check.status === 'up' ? colors.green + '40' : check.status === 'down' ? colors.red + '40' : colors.border}`,
-            borderRadius: '8px',
-            padding: '16px',
+            borderRadius: '8px', padding: '16px',
           }}>
-            <div style={{ fontSize: '12px', color: colors.textSecondary, textTransform: 'uppercase', marginBottom: '8px' }}>
-              {name}
-            </div>
+            <div style={{ fontSize: '12px', color: colors.textSecondary, textTransform: 'uppercase', marginBottom: '8px' }}>{name}</div>
             <StatusBadge status={check.status} />
-            {'latencyMs' in check && (
-              <div style={{ fontSize: '11px', color: colors.textMuted, marginTop: '8px', fontFamily: fonts.mono }}>
-                {check.latencyMs}ms
-              </div>
-            )}
-            {'lastSuccessAt' in check && check.lastSuccessAt && (
+            {check.lastSuccessAt && (
               <div style={{ fontSize: '11px', color: colors.textMuted, marginTop: '4px' }}>
                 Last: {formatRelativeTime(check.lastSuccessAt)}
               </div>
@@ -109,14 +168,51 @@ export function System() {
         ))}
       </div>
 
-      {/* Overall status */}
+      {/* Circuit Breakers + Portfolio + Budget in a row */}
       {health && (
-        <div style={{ marginBottom: '24px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <span style={{ color: colors.textSecondary }}>Overall:</span>
-          <StatusBadge status={health.status} />
-          <span style={{ color: colors.textMuted, fontSize: '13px', fontFamily: fonts.mono }}>
-            Uptime: {Math.floor(health.uptime / 3600)}h {Math.floor((health.uptime % 3600) / 60)}m
-          </span>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
+          {/* Circuit Breakers */}
+          {health.circuitBreakers && Object.keys(health.circuitBreakers).length > 0 && (
+            <div style={{ backgroundColor: colors.bgSecondary, border: `1px solid ${colors.border}`, borderRadius: '8px', padding: '16px' }}>
+              <div style={{ fontSize: '12px', color: colors.textSecondary, textTransform: 'uppercase', marginBottom: '12px' }}>Circuit Breakers</div>
+              {Object.entries(health.circuitBreakers).map(([name, cb]) => (
+                <div key={name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0' }}>
+                  <span style={{ fontFamily: fonts.mono, fontSize: '12px', color: colors.text }}>{name}</span>
+                  <span style={{
+                    fontFamily: fonts.mono, fontSize: '11px', fontWeight: 700,
+                    color: cb.state === 'CLOSED' ? colors.green : cb.state === 'OPEN' ? colors.red : colors.yellow,
+                  }}>
+                    {cb.state} {cb.failures > 0 && `(${cb.failures})`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {/* Portfolio summary */}
+          {health.portfolio && (
+            <div style={{ backgroundColor: colors.bgSecondary, border: `1px solid ${colors.border}`, borderRadius: '8px', padding: '16px' }}>
+              <div style={{ fontSize: '12px', color: colors.textSecondary, textTransform: 'uppercase', marginBottom: '12px' }}>Paper Portfolio</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '12px', color: colors.textMuted }}>Positions</span>
+                  <span style={{ fontFamily: fonts.mono, fontSize: '14px', fontWeight: 700, color: colors.text }}>{health.portfolio.paperPositions}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '12px', color: colors.textMuted }}>Deployed</span>
+                  <span style={{ fontFamily: fonts.mono, fontSize: '14px', fontWeight: 700, color: colors.text }}>${health.portfolio.totalDeployed.toFixed(2)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '12px', color: colors.textMuted }}>Unrealized P&L</span>
+                  <span style={{
+                    fontFamily: fonts.mono, fontSize: '14px', fontWeight: 700,
+                    color: health.portfolio.unrealizedPnl >= 0 ? colors.green : colors.red,
+                  }}>
+                    {health.portfolio.unrealizedPnl >= 0 ? '+' : ''}${health.portfolio.unrealizedPnl.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -333,6 +429,91 @@ export function System() {
               <span><span style={{ display: 'inline-block', width: '8px', height: '8px', backgroundColor: colors.accentDim, borderRadius: '2px', border: `1px dashed ${colors.accent}`, marginRight: '4px' }} />Projected</span>
             </div>
           </div>
+        </>
+      )}
+
+      {/* ── Training & Calibration ── */}
+      {trainingStatus && (
+        <>
+          <h2 style={{ fontFamily: fonts.mono, fontSize: '16px', marginTop: '32px', marginBottom: '16px', color: colors.text }}>
+            Training & Calibration
+          </h2>
+
+          {/* Training data + model + directional balance */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginBottom: '20px' }}>
+            {/* Training Data */}
+            <div style={{ padding: '14px', borderRadius: '8px', backgroundColor: colors.bgSecondary, border: `1px solid ${colors.border}` }}>
+              <div style={{ fontSize: '11px', color: colors.textMuted, marginBottom: '6px', fontFamily: fonts.mono }}>Training Snapshots</div>
+              <div style={{ fontSize: '20px', fontWeight: 700, color: colors.text }}>{trainingStatus.trainingData.totalSnapshots}</div>
+              <div style={{ fontSize: '11px', color: colors.textMuted, marginTop: '4px' }}>
+                {trainingStatus.trainingData.resolvedSnapshots} resolved / {trainingStatus.trainingData.unresolvedSnapshots} pending
+              </div>
+            </div>
+
+            {/* Model Status */}
+            <div style={{ padding: '14px', borderRadius: '8px', backgroundColor: colors.bgSecondary, border: `1px solid ${colors.border}` }}>
+              <div style={{ fontSize: '11px', color: colors.textMuted, marginBottom: '6px', fontFamily: fonts.mono }}>FeatureModel</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: trainingStatus.featureModel.status === 'trained' ? colors.green : colors.yellow }}>
+                {trainingStatus.featureModel.status === 'trained'
+                  ? `Trained (${trainingStatus.featureModel.sampleSize} samples)`
+                  : 'Untrained'}
+              </div>
+              {trainingStatus.featureModel.validationAccuracy > 0 && (
+                <div style={{ fontSize: '11px', color: colors.textMuted, marginTop: '4px' }}>
+                  Val accuracy: {(trainingStatus.featureModel.validationAccuracy * 100).toFixed(1)}%
+                </div>
+              )}
+            </div>
+
+            {/* Directional Balance */}
+            <div style={{ padding: '14px', borderRadius: '8px', backgroundColor: colors.bgSecondary, border: `1px solid ${colors.border}` }}>
+              <div style={{ fontSize: '11px', color: colors.textMuted, marginBottom: '6px', fontFamily: fonts.mono }}>Direction (7d)</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: trainingStatus.directionalBalance.yesRatio > 75 || trainingStatus.directionalBalance.yesRatio < 25 ? colors.red : colors.green }}>
+                {trainingStatus.directionalBalance.yesRatio}% YES / {100 - trainingStatus.directionalBalance.yesRatio}% NO
+              </div>
+              <div style={{ fontSize: '11px', color: colors.textMuted, marginTop: '4px' }}>
+                {trainingStatus.directionalBalance.buyYes}Y / {trainingStatus.directionalBalance.buyNo}N ({trainingStatus.directionalBalance.total} total)
+              </div>
+            </div>
+          </div>
+
+          {/* Calibration Table */}
+          {trainingStatus.calibration.length > 0 && (
+            <div style={{ padding: '16px', borderRadius: '8px', backgroundColor: colors.bgSecondary, border: `1px solid ${colors.border}` }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: colors.text, marginBottom: '12px', fontFamily: fonts.mono }}>
+                Calibration by Decile
+              </div>
+              <table style={{ width: '100%', fontSize: '12px', fontFamily: fonts.mono, borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${colors.border}` }}>
+                    <th style={{ textAlign: 'left', padding: '6px 8px', color: colors.textMuted }}>Bucket</th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px', color: colors.textMuted }}>Positions</th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px', color: colors.textMuted }}>Predicted</th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px', color: colors.textMuted }}>Actual</th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px', color: colors.textMuted }}>Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trainingStatus.calibration.filter(c => c.positions > 0).map(c => (
+                    <tr key={c.bucket} style={{ borderBottom: `1px solid ${colors.border}20` }}>
+                      <td style={{ padding: '6px 8px', color: colors.text }}>{c.bucket}</td>
+                      <td style={{ textAlign: 'right', padding: '6px 8px', color: colors.textSecondary }}>{c.positions}</td>
+                      <td style={{ textAlign: 'right', padding: '6px 8px', color: colors.textSecondary }}>{c.predictedAvg.toFixed(1)}%</td>
+                      <td style={{ textAlign: 'right', padding: '6px 8px', color: colors.textSecondary }}>{c.actualWinRate.toFixed(1)}%</td>
+                      <td style={{ textAlign: 'right', padding: '6px 8px', color: Math.abs(c.calibrationError) > 10 ? colors.red : colors.green, fontWeight: 600 }}>
+                        {c.calibrationError > 0 ? '+' : ''}{c.calibrationError.toFixed(1)}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {trainingStatus.calibration.every(c => c.positions === 0) && (
+                <div style={{ textAlign: 'center', padding: '20px', color: colors.textMuted, fontSize: '12px' }}>
+                  No calibration data yet. Waiting for markets to resolve.
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
     </div>

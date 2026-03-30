@@ -34,33 +34,7 @@ const MIN_EV = 0.005;           // 0.5% minimum expected value
 const MIN_CONFIDENCE = 0.10;    // 10% minimum confidence
 const MIN_VOLUME = 100;         // $100 minimum volume
 
-/**
- * Kalshi fee: ceil(7% × profit) where profit = max(0, payout - cost).
- *
- * For a YES contract: cost = price, payout_if_win = 1.00
- *   Entry fee = ceil(0.07 × max(0, 1.00 - price)) per contract
- *   Exit fee  = ceil(0.07 × max(0, exit_price - 0)) per contract (selling)
- *
- * Simplified per-contract round-trip fee estimate at entry:
- *   We assume exit at our fair value (fusedProbability), so:
- *   entry_fee = 0.07 × (1 - entryPrice)   (profit on win)
- *   exit_fee  ≈ 0.07 × exitPrice          (profit from selling)
- *   But for sizing we just need a reasonable estimate, so use:
- *   fee ≈ 0.07 × (1 - entryPrice) for entry side (conservative).
- */
-function kalshiFeeEstimate(entryPrice: number): number {
-  // Per-contract entry fee as fraction of notional
-  // Fee = 7% of potential profit = 7% × (1 - entryPrice)
-  // This is the fee per $1 contract at this price
-  return 0.07 * Math.max(0, 1 - entryPrice);
-}
-
-/**
- * Polymarket fee: ~2% taker fee on notional
- */
-function polymarketFee(entryPrice: number): number {
-  return 0.02 * entryPrice;
-}
+import { platformFeeRate } from '@apex/shared';
 
 /**
  * Score a single opportunity.
@@ -86,10 +60,8 @@ export function scoreOpportunity(input: ScoringInput): OpportunityScore {
   const edgeMagnitude = Math.abs(rawEdge);
   const edgeDirection: 'BUY_YES' | 'BUY_NO' = rawEdge > 0 ? 'BUY_YES' : 'BUY_NO';
 
-  // ── Fee calculation ──
-  // Use correct entry price based on direction
-  const entryPrice = edgeDirection === 'BUY_YES' ? marketPrice : (1 - marketPrice);
-  const feeRate = platform === 'KALSHI' ? kalshiFeeEstimate(entryPrice) : polymarketFee(entryPrice);
+  // ── Fee calculation (unified shared calculator) ──
+  const feeRate = platformFeeRate(platform, edgeDirection, marketPrice);
   const feeDrag = edgeMagnitude > 0 ? feeRate / edgeMagnitude : 1;
   const netEdge = Math.max(0, edgeMagnitude - feeRate);
 

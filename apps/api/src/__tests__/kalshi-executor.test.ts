@@ -9,11 +9,10 @@ describe('KalshiExecutor', () => {
   });
 
   describe('calculateFee', () => {
-    it('computes fee correctly for standard inputs', () => {
-      // ceil(0.07 × 10 × 0.55 × 0.45 * 100) / 100
+    it('computes fee = ceil(0.07 × (1 - pricePaid) × contracts)', () => {
+      // 10 contracts at pricePaid=0.55: 0.07 × 0.45 × 10 = 0.315 → ceil = 0.32
       const fee = executor.calculateFee(10, 0.55);
-      const expected = Math.ceil(0.07 * 10 * 0.55 * 0.45 * 100) / 100;
-      expect(fee).toBe(expected);
+      expect(fee).toBe(Math.ceil(0.07 * (1 - 0.55) * 10 * 100) / 100);
     });
 
     it('returns 0 at price boundaries', () => {
@@ -21,16 +20,19 @@ describe('KalshiExecutor', () => {
       expect(executor.calculateFee(10, 1)).toBe(0);
     });
 
-    it('fee is symmetric around 0.50', () => {
+    it('fee is NOT symmetric — depends on potential profit', () => {
+      // price=0.30: fee = 0.07 × 0.70 × 10 = 0.49
+      // price=0.70: fee = 0.07 × 0.30 × 10 = 0.21
       const fee30 = executor.calculateFee(10, 0.30);
       const fee70 = executor.calculateFee(10, 0.70);
-      expect(fee30).toBe(fee70);
+      expect(fee30).toBeGreaterThan(fee70);
+      expect(fee30).toBe(0.49);
+      expect(fee70).toBe(0.21);
     });
 
     it('fee scales linearly with contract count', () => {
       const fee5 = executor.calculateFee(5, 0.50);
       const fee10 = executor.calculateFee(10, 0.50);
-      // Due to ceiling, might not be exactly 2x but should be close
       expect(fee10).toBeGreaterThan(fee5);
     });
   });

@@ -5,6 +5,8 @@
 // Restart: pm2 restart all
 // Stop:    pm2 stop all
 // Monitor: pm2 monit
+// Health:  curl http://localhost:3001/api/v1/system/health
+// Ready:   curl http://localhost:3001/api/v1/system/ready
 
 const path = require('path');
 const ROOT = __dirname;
@@ -20,6 +22,7 @@ module.exports = {
       interpreter: 'none',
       autorestart: true,
       max_restarts: 10,
+      max_memory_restart: '512M',
       restart_delay: 5000,
       env: {
         NODE_ENV: 'development',
@@ -38,6 +41,7 @@ module.exports = {
       interpreter: 'none',
       autorestart: true,
       max_restarts: 10,
+      max_memory_restart: '512M',
       restart_delay: 5000,
       env: {
         NODE_ENV: 'development',
@@ -49,6 +53,26 @@ module.exports = {
       time: true,
     },
     {
+      name: 'apex-speed',
+      cwd: path.join(ROOT, 'apps/api'),
+      script: path.join(BIN, 'tsx'),
+      args: 'src/speed-worker.ts',
+      interpreter: 'none',
+      autorestart: true,
+      max_restarts: 10,
+      max_memory_restart: '512M',
+      restart_delay: 2000,
+      env: {
+        NODE_ENV: 'development',
+        BINANCE_WS_ENABLED: 'true',
+        PATH: `/opt/homebrew/bin:${BIN}:/usr/local/bin:${process.env.PATH}`,
+      },
+      out_file: path.join(ROOT, 'logs/speed.log'),
+      error_file: path.join(ROOT, 'logs/speed-error.log'),
+      merge_logs: true,
+      time: true,
+    },
+    {
       name: 'apex-dashboard',
       cwd: path.join(ROOT, 'apps/dashboard'),
       script: path.join(BIN, 'vite'),
@@ -56,6 +80,7 @@ module.exports = {
       interpreter: 'none',
       autorestart: true,
       max_restarts: 10,
+      max_memory_restart: '512M',
       restart_delay: 3000,
       env: {
         NODE_ENV: 'development',

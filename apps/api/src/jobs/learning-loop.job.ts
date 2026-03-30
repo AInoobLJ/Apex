@@ -95,6 +95,24 @@ export async function handleLearningLoop(job: Job): Promise<void> {
       } catch {
         // Continue without enriched features
       }
+    } else {
+      // Fallback: check TrainingSnapshot for feature vectors (collected since V2.39)
+      try {
+        const snapshot = await prisma.trainingSnapshot.findFirst({
+          where: {
+            marketId: market.id,
+            featureVector: { not: null },
+            featureSchemaVersion: FEATURE_SCHEMA_VERSION,
+          },
+          orderBy: { createdAt: 'desc' },
+          select: { featureVector: true },
+        });
+        if (snapshot?.featureVector) {
+          Object.assign(fv, snapshot.featureVector as object);
+        }
+      } catch {
+        // Continue without enriched features
+      }
     }
 
     trainingData.push({ features: fv, outcome });
@@ -159,6 +177,9 @@ export async function handleLearningLoop(job: Job): Promise<void> {
   });
   logger.info('Calibration records persisted to DB');
 
+  // Step 6b: Compute and persist decile calibration from training snapshots
+  await computeCalibrationDeciles();
+
   logger.info({
     trainingDataSize: trainingData.length,
     modelAccuracy: newModel.accuracy,
@@ -187,4 +208,78 @@ export async function handleLearningLoop(job: Job): Promise<void> {
   await telegramService.sendMessage(telegramMsg).catch((err: any) => {
     logger.warn({ err: err.message }, 'Failed to send learning loop Telegram summary');
   });
+}
+
+/**
+ * Compute calibration results by decile bucket from resolved training snapshots.
+ * Groups all resolved snapshots by predicted probability decile (0-10%, 10-20%, ..., 90-100%)
+ * and compares predicted vs actual outcomes.
+ *
+ * Can be called from the learning loop (weekly) or on demand via API.
+ */
+export async function computeCalibrationDeciles(): Promise<void> {
+  const resolved = await prisma.trainingSnapshot.findMany({
+    where: { outcome: { not: null } },
+    select: { cortexProbability: true, outcome: true, edgeDirection: true },
+  });
+
+  if (resolved.length < 10) {
+    logger.info({ count: resolved.length }, 'Insufficient resolved snapshots for calibration (<10)');
+    return;
+  }
+
+  const BUCKET_LABELS = [
+    '0-10%', '10-20%', '20-30%', '30-40%', '40-50%',
+    '50-60%', '60-70%', '70-80%', '80-90%', '90-100%',
+  ];
+
+  // Group by predicted probability decile
+  const buckets: { predicted: number[]; outcomes: number[] }[] =
+    Array.from({ length: 10 }, () => ({ predicted: [], outcomes: [] }));
+
+  for (const snap of resolved) {
+    const prob = snap.cortexProbability;
+    const bucketIdx = Math.min(9, Math.floor(prob * 10));
+    buckets[bucketIdx].predicted.push(prob);
+    buckets[bucketIdx].outcomes.push(snap.outcome!);
+  }
+
+  const periodEnd = new Date();
+  const periodStart = new Date(Date.now() - 180 * 86400000); // 6 months
+
+  // Build calibration results
+  const results = buckets.map((b, i) => ({
+    bucket: i,
+    bucketLabel: BUCKET_LABELS[i],
+    positionCount: b.predicted.length,
+    winCount: b.outcomes.filter(o => o === 1).length,
+    predictedAvg: b.predicted.length > 0
+      ? b.predicted.reduce((s, v) => s + v, 0) / b.predicted.length
+      : (i + 0.5) / 10,
+    actualWinRate: b.predicted.length > 0
+      ? b.outcomes.filter(o => o === 1).length / b.predicted.length
+      : 0,
+    calibrationError: 0, // filled below
+    periodStart,
+    periodEnd,
+  }));
+
+  for (const r of results) {
+    r.calibrationError = r.predictedAvg - r.actualWinRate;
+  }
+
+  // Persist to DB (replace previous calibration results)
+  await prisma.calibrationResult.deleteMany({});
+  await prisma.calibrationResult.createMany({ data: results });
+
+  // Log calibration report
+  const report = results
+    .filter(r => r.positionCount > 0)
+    .map(r => `  ${r.bucketLabel}: ${r.positionCount} positions, predicted ${(r.predictedAvg * 100).toFixed(1)}%, actual ${(r.actualWinRate * 100).toFixed(1)}%, error ${r.calibrationError > 0 ? '+' : ''}${(r.calibrationError * 100).toFixed(1)}%`)
+    .join('\n');
+
+  logger.info({
+    totalResolved: resolved.length,
+    bucketsWithData: results.filter(r => r.positionCount > 0).length,
+  }, `Calibration report:\n${report}`);
 }

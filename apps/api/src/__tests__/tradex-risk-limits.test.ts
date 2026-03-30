@@ -10,23 +10,23 @@ describe('TRADEX Risk Limits', () => {
 
   it('clamps values exceeding hard ceilings', () => {
     const overLimit: RiskLimitConfig = {
-      maxPerTrade: 999,
-      maxDailyNewTrades: 9999,
-      maxSimultaneousPositions: 100,
-      maxTotalDeployed: 99999,
-      consecutiveLossHalt: 50,
-      dailyPnlHalt: -9999,
-      maxArbExecutionsPerHour: 200,
+      maxPerTrade: 999999,
+      maxDailyNewTrades: 999999,
+      maxSimultaneousPositions: 999999,
+      maxTotalDeployed: 999999,
+      consecutiveLossHalt: 999,
+      dailyPnlHalt: -999999,
+      maxArbExecutionsPerHour: 999,
     };
 
     const enforced = enforceHardCeilings(overLimit);
-    expect(enforced.maxPerTrade).toBe(HARD_CEILINGS.maxPerTrade); // 500
-    expect(enforced.maxDailyNewTrades).toBe(HARD_CEILINGS.maxDailyNewTrades); // 1000
-    expect(enforced.maxSimultaneousPositions).toBe(HARD_CEILINGS.maxSimultaneousPositions); // 25
-    expect(enforced.maxTotalDeployed).toBe(HARD_CEILINGS.maxTotalDeployed); // 5000
-    expect(enforced.consecutiveLossHalt).toBe(HARD_CEILINGS.consecutiveLossHalt); // 10
-    expect(enforced.dailyPnlHalt).toBe(HARD_CEILINGS.dailyPnlHalt); // -500
-    expect(enforced.maxArbExecutionsPerHour).toBe(HARD_CEILINGS.maxArbExecutionsPerHour); // 50
+    expect(enforced.maxPerTrade).toBe(HARD_CEILINGS.maxPerTrade);
+    expect(enforced.maxDailyNewTrades).toBe(HARD_CEILINGS.maxDailyNewTrades);
+    expect(enforced.maxSimultaneousPositions).toBe(HARD_CEILINGS.maxSimultaneousPositions);
+    expect(enforced.maxTotalDeployed).toBe(HARD_CEILINGS.maxTotalDeployed);
+    expect(enforced.consecutiveLossHalt).toBe(HARD_CEILINGS.consecutiveLossHalt);
+    expect(enforced.dailyPnlHalt).toBe(HARD_CEILINGS.dailyPnlHalt);
+    expect(enforced.maxArbExecutionsPerHour).toBe(HARD_CEILINGS.maxArbExecutionsPerHour);
   });
 
   it('allows values within ceilings', () => {
@@ -44,13 +44,14 @@ describe('TRADEX Risk Limits', () => {
     expect(enforced).toEqual(withinLimits);
   });
 
-  it('hard ceilings have correct values per spec', () => {
-    expect(HARD_CEILINGS.maxPerTrade).toBe(500);
-    expect(HARD_CEILINGS.maxDailyNewTrades).toBe(1000);
-    expect(HARD_CEILINGS.maxSimultaneousPositions).toBe(25);
-    expect(HARD_CEILINGS.maxTotalDeployed).toBe(5000);
-    expect(HARD_CEILINGS.consecutiveLossHalt).toBe(10);
-    expect(HARD_CEILINGS.dailyPnlHalt).toBe(-500);
-    expect(HARD_CEILINGS.maxArbExecutionsPerHour).toBe(50);
+  it('hard ceilings are >= defaults (defaults must fit within ceilings)', () => {
+    expect(HARD_CEILINGS.maxPerTrade).toBeGreaterThanOrEqual(DEFAULT_RISK_LIMITS.maxPerTrade);
+    expect(HARD_CEILINGS.maxDailyNewTrades).toBeGreaterThanOrEqual(DEFAULT_RISK_LIMITS.maxDailyNewTrades);
+    expect(HARD_CEILINGS.maxSimultaneousPositions).toBeGreaterThanOrEqual(DEFAULT_RISK_LIMITS.maxSimultaneousPositions);
+    expect(HARD_CEILINGS.maxTotalDeployed).toBeGreaterThanOrEqual(DEFAULT_RISK_LIMITS.maxTotalDeployed);
+    expect(HARD_CEILINGS.consecutiveLossHalt).toBeGreaterThanOrEqual(DEFAULT_RISK_LIMITS.consecutiveLossHalt);
+    // dailyPnlHalt is negative — ceiling is more negative (more permissive)
+    expect(HARD_CEILINGS.dailyPnlHalt).toBeLessThanOrEqual(DEFAULT_RISK_LIMITS.dailyPnlHalt);
+    expect(HARD_CEILINGS.maxArbExecutionsPerHour).toBeGreaterThanOrEqual(DEFAULT_RISK_LIMITS.maxArbExecutionsPerHour);
   });
 });

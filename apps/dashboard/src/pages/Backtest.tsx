@@ -110,11 +110,51 @@ export function Backtest() {
 
           {liveData && liveData.totalPositions > 0 ? (
             <>
+              {/* ── Portfolio P&L Summary ── */}
+              <div style={{ backgroundColor: colors.bgSecondary, border: `1px solid ${colors.border}`, borderRadius: '8px', padding: '16px 20px', marginBottom: '16px' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '24px', flexWrap: 'wrap' }}>
+                  <div>
+                    <span style={{ fontSize: '11px', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Total P&L</span>
+                    <div style={{ fontFamily: fonts.mono, fontSize: '24px', fontWeight: 700, color: (liveData.totalPnl ?? 0) >= 0 ? colors.green : colors.red }}>
+                      {fmtPnl(liveData.totalPnl ?? 0)}
+                    </div>
+                  </div>
+                  <div style={{ borderLeft: `1px solid ${colors.border}`, paddingLeft: '24px' }}>
+                    <span style={{ fontSize: '11px', color: colors.textMuted }}>Realized</span>
+                    <div style={{ fontFamily: fonts.mono, fontSize: '14px', color: (liveData.realizedPnl ?? 0) >= 0 ? colors.green : colors.red }}>
+                      {fmtPnl(liveData.realizedPnl ?? 0)}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '11px', color: colors.textMuted }}>Unrealized</span>
+                    <div style={{ fontFamily: fonts.mono, fontSize: '14px', color: (liveData.unrealizedPnl ?? 0) >= 0 ? colors.green : colors.red }}>
+                      {fmtPnl(liveData.unrealizedPnl ?? 0)}
+                    </div>
+                  </div>
+                  <div style={{ borderLeft: `1px solid ${colors.border}`, paddingLeft: '24px' }}>
+                    <span style={{ fontSize: '11px', color: colors.textMuted }}>Win / Loss</span>
+                    <div style={{ fontFamily: fonts.mono, fontSize: '14px', color: colors.text }}>
+                      {liveData.wins ?? 0}W / {liveData.losses ?? 0}L{' '}
+                      <span style={{ color: colors.textMuted, fontSize: '12px' }}>
+                        ({liveData.wins != null && liveData.losses != null && (liveData.wins + liveData.losses) > 0
+                          ? ((liveData.wins / (liveData.wins + liveData.losses)) * 100).toFixed(0) + '%'
+                          : '—'})
+                      </span>
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '11px', color: colors.textMuted }}>Deployed</span>
+                    <div style={{ fontFamily: fonts.mono, fontSize: '14px', color: colors.text }}>
+                      {fmtDollar(liveData.totalDeployed ?? 0)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', marginBottom: '24px' }}>
                 <StatCard label="Paper Positions" value={String(liveData.totalPositions)} subtitle={`${liveData.openPositions} open`} color={colors.accent} />
                 <StatCard label="Resolved" value={String(liveData.resolvedPositions)} subtitle="with outcomes" color={colors.textSecondary} />
                 <StatCard label="Hit Rate" value={liveData.resolvedPositions > 0 ? `${(liveData.hitRate * 100).toFixed(1)}%` : '—'} subtitle="direction accuracy" color={liveData.hitRate > 0.55 ? colors.green : colors.textSecondary} />
-                <StatCard label="Paper P&L" value={liveData.resolvedPositions > 0 ? `${liveData.paperPnl >= 0 ? '+' : ''}$${liveData.paperPnl.toFixed(2)}` : '—'} subtitle="simulated" color={liveData.paperPnl >= 0 ? colors.green : colors.red} />
                 <StatCard label="Avg Edge" value={liveData.avgEdge ? `${(liveData.avgEdge * 100).toFixed(1)}%` : '—'} subtitle="at entry" color={colors.textSecondary} />
                 <StatCard label="Days Active" value={String(liveData.daysActive || 0)} subtitle="of 30 target" color={colors.textSecondary} />
               </div>
@@ -133,14 +173,16 @@ export function Backtest() {
                     </thead>
                     <tbody>
                       {liveData.positions.map((p: any, i: number) => (
-                        <tr key={i} onClick={() => p.marketId && navigate(`/markets/${p.marketId}/signals`)} style={{ borderBottom: `1px solid ${colors.border}20`, cursor: p.marketId ? 'pointer' : 'default' }} onMouseEnter={(e) => { if (p.marketId) (e.currentTarget as HTMLElement).style.backgroundColor = colors.bgTertiary; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = ''; }}>
+                        <tr key={i} onClick={() => p.id ? navigate(`/trades/${p.id}`) : p.marketId && navigate(`/markets/${p.marketId}/signals`)} style={{ borderBottom: `1px solid ${colors.border}20`, cursor: (p.id || p.marketId) ? 'pointer' : 'default' }} onMouseEnter={(e) => { if (p.id || p.marketId) (e.currentTarget as HTMLElement).style.backgroundColor = colors.bgTertiary; }} onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = ''; }}>
                           <td style={{ padding: '6px 8px', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</td>
                           <td style={{ padding: '6px 8px', color: p.direction === 'BUY_YES' ? colors.green : colors.red }}>{p.direction}</td>
                           <td style={{ padding: '6px 8px' }}>{(p.entryPrice * 100).toFixed(1)}{'\u00a2'}</td>
                           <td style={{ padding: '6px 8px' }}>{(p.currentPrice * 100).toFixed(1)}{'\u00a2'}</td>
                           <td style={{ padding: '6px 8px' }}>{(p.edge * 100).toFixed(1)}%</td>
-                          <td style={{ padding: '6px 8px', color: p.pnl >= 0 ? colors.green : colors.red }}>{p.pnl >= 0 ? '+' : ''}{(p.pnl * 100).toFixed(1)}{'\u00a2'}</td>
-                          <td style={{ padding: '6px 8px', color: p.isOpen ? colors.accent : colors.textMuted }}>{p.isOpen ? 'OPEN' : 'CLOSED'}</td>
+                          <td style={{ padding: '6px 8px', color: p.pnl >= 0 ? colors.green : colors.red }}>{fmtPnl(p.pnl)}</td>
+                          <td style={{ padding: '6px 8px', color: p.needsReview ? colors.yellow : p.isOpen ? colors.accent : colors.textMuted }} title={p.needsReview ? `Needs review: ${p.reviewReason || 'edge degraded or signal lost'}` : ''}>
+                            {p.needsReview ? '\u26A0 Review' : p.isOpen ? 'OPEN' : p.closeReason === 'take_profit' ? 'TP' : 'CLOSED'}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -301,6 +343,23 @@ export function Backtest() {
       )}
     </div>
   );
+}
+
+/* ─── Helpers ──────────────────────────────────────── */
+
+function fmtDollar(v: number): string {
+  const abs = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(1)}k`;
+  return `${sign}$${abs.toFixed(2)}`;
+}
+
+function fmtPnl(v: number): string {
+  const abs = Math.abs(v);
+  const sign = v > 0 ? '+' : v < 0 ? '-' : '';
+  if (abs >= 1) return `${sign}$${abs.toFixed(2)}`;
+  // Sub-dollar: show as cents
+  return `${sign}${(abs * 100).toFixed(1)}\u00a2`;
 }
 
 /* ─── Shared Components ──────────────────────────────── */

@@ -45,14 +45,16 @@ const FUTURES_PATTERNS: RegExp[] = [
   // Awards / MVP
   /(?:win|awarded?)\s+(the\s+)?(20\d\d[-–]?\d{0,4}\s+)?(?:\w+\s+)?(?:mvp|ballon\s*d'or|cy\s+young|heisman|rookie\s+of\s+the\s+year|dpoy|defensive\s+player|most\s+valuable)/i,
   /\bmvp\b/i, // Catch any market with "MVP" — these are always season awards
-  // Season-level outcomes
-  /make\s+(the\s+)?(?:playoffs?|postseason|final\s+four|elite\s+eight|sweet\s+sixteen|conference\s+finals?|world\s+series)/i,
+  // Season-level outcomes — allow optional league name before keyword (e.g., "make the NBA Playoffs")
+  /make\s+(the\s+)?(\w+\s+)?(?:playoffs?|postseason|final\s+four|elite\s+eight|sweet\s+sixteen|conference\s+finals?|world\s+series)/i,
   /finish\s+(in\s+)?(?:top\s+\d|first|last|bottom)/i,
   /(?:relegated|promotion|promoted)/i,
   // Explicit "champion" phrasing
   /(?:20\d\d[-–]?\d{0,2}\s+)?champion(?:s)?$/i,
-  // Conference/division winners
-  /win\s+(the\s+)?(?:eastern|western|afc|nfc|al|nl|atlantic|pacific|central|southeast|northwest|southwest)\s+(?:conference|division)/i,
+  // Conference/division winners — "win the NFC", "win the Eastern Conference", "AFC winner"
+  /win\s+(the\s+)?(?:eastern|western|afc|nfc|al|nl|atlantic|pacific|central|southeast|northwest|southwest)\s*(?:conference|division)?/i,
+  // "X winner" suffix phrasing — "World Cup winner", "Super Bowl winner", "Heisman Trophy winner"
+  /(?:champions\s*league|world\s*cup|super\s*bowl|stanley\s*cup|heisman(?:\s+trophy)?|mvp|ballon\s*d'or|cy\s+young|march\s*madness|ncaa\s+tournament)\s+winner/i,
 ];
 
 const MATCH_PATTERNS: RegExp[] = [

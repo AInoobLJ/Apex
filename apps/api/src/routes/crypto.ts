@@ -2,6 +2,8 @@ import { FastifyInstance } from 'fastify';
 import { prisma } from '../lib/prisma';
 import { getCryptoPrices, parseKalshiCryptoTicker, calculateSpotImpliedProb, calculateBracketImpliedProb } from '../services/crypto-price';
 import { calculateKalshiFee } from '../services/fee-calculator';
+import { deribit } from '../services/data-sources/deribit';
+import { getAllVolEstimates } from '../services/volatility-estimator';
 
 // Moneyness thresholds
 const ATM_THRESHOLD = 0.03;  // Within 3% of spot = at the money
@@ -22,22 +24,47 @@ export default async function cryptoRoutes(fastify: FastifyInstance) {
   fastify.get('/crypto/dashboard', async () => {
     const prices = await getCryptoPrices();
 
+    // Fetch markets first WITHOUT signals to avoid Postgres bind variable limit
+    // (32,767 max — exceeded when thousands of KX markets each include 3 signal rows)
     const cryptoMarkets = await prisma.market.findMany({
       where: {
         platform: 'KALSHI',
         status: 'ACTIVE',
         platformMarketId: { startsWith: 'KX' },
+        closesAt: { gte: new Date(Date.now() + MIN_MINUTES_REMAINING * 60000) },
       },
       include: {
         contracts: { where: { outcome: 'YES' }, take: 1 },
-        signals: {
-          where: { moduleId: { in: ['SPEEDEX', 'ARBEX', 'CRYPTEX'] } },
-          orderBy: { createdAt: 'desc' },
-          take: 3,
-        },
       },
       orderBy: { closesAt: 'asc' },
+      take: 500,
     });
+
+    // Batch-fetch signals separately for the selected markets
+    const marketIds = cryptoMarkets.map(m => m.id);
+    const signals = marketIds.length > 0
+      ? await prisma.signal.findMany({
+          where: {
+            marketId: { in: marketIds },
+            moduleId: { in: ['SPEEDEX', 'ARBEX', 'CRYPTEX'] },
+          },
+          orderBy: { createdAt: 'desc' },
+        })
+      : [];
+
+    // Group signals by marketId (keep latest 3 per market)
+    const signalsByMarket = new Map<string, typeof signals>();
+    for (const sig of signals) {
+      const arr = signalsByMarket.get(sig.marketId) ?? [];
+      if (arr.length < 3) arr.push(sig);
+      signalsByMarket.set(sig.marketId, arr);
+    }
+
+    // Attach signals to markets
+    const cryptoMarketsWithSignals = cryptoMarkets.map(m => ({
+      ...m,
+      signals: signalsByMarket.get(m.id) ?? [],
+    }));
 
     const polymarketCrypto = await prisma.market.findMany({
       where: {
@@ -53,7 +80,7 @@ export default async function cryptoRoutes(fastify: FastifyInstance) {
       take: 50,
     });
 
-    const enrichedMarkets = cryptoMarkets.map(m => {
+    const enrichedMarkets = cryptoMarketsWithSignals.map(m => {
       const parsed = parseKalshiCryptoTicker(m.platformMarketId);
       const yesContract = m.contracts[0];
       const marketPrice = yesContract?.lastPrice ?? 0;
@@ -172,8 +199,30 @@ export default async function cryptoRoutes(fastify: FastifyInstance) {
     const atmContracts = enrichedMarkets.filter(m => m.moneyness === 'ATM');
     const tradeableContracts = enrichedMarkets.filter(m => m.tradeable);
 
+    // Fetch implied volatility from Deribit + VOL-REGIME estimates
+    const [btcDvol, ethDvol, solDvol, volEstimates] = await Promise.all([
+      deribit.getDVOL('BTC').catch(() => null),
+      deribit.getDVOL('ETH').catch(() => null),
+      deribit.getDVOL('SOL').catch(() => null),
+      getAllVolEstimates().catch(() => ({})),
+    ]);
+
+    const volatility: Record<string, any> = {};
+    for (const [sym, dvol] of [['BTC', btcDvol], ['ETH', ethDvol], ['SOL', solDvol]] as const) {
+      const est = (volEstimates as any)[sym];
+      volatility[sym] = {
+        dvol: dvol?.dvol ?? null,
+        expectedDailyMove: dvol?.expectedDailyMove ?? null,
+        source: dvol ? (sym === 'SOL' ? 'proxy' : 'deribit') : null,
+        regime: est?.regime ?? null,
+        volForPricing: est ? (est.vol * 100).toFixed(1) : null,
+        variancePremium: est?.components?.variancePremium ?? null,
+      };
+    }
+
     return {
       spotPrices: prices,
+      volatility,
       kalshiCrypto: enrichedMarkets,
       polymarketCrypto: polymarketCrypto.map(m => ({
         id: m.id,
@@ -196,5 +245,163 @@ export default async function cryptoRoutes(fastify: FastifyInstance) {
   // GET /crypto/prices — just spot prices
   fastify.get('/crypto/prices', async () => {
     return getCryptoPrices();
+  });
+
+  // GET /crypto/markets/:id/detail — detailed signal breakdown for a crypto market
+  fastify.get('/crypto/markets/:id/detail', async (request, reply) => {
+    const { id } = request.params as { id: string };
+
+    const market = await prisma.market.findUnique({
+      where: { id },
+      include: {
+        contracts: { where: { outcome: 'YES' }, take: 1 },
+      },
+    });
+    if (!market) return reply.status(404).send({ error: 'Market not found' });
+
+    const prices = await getCryptoPrices();
+    const parsed = parseKalshiCryptoTicker(market.platformMarketId);
+    const yesContract = market.contracts[0];
+    const marketPrice = yesContract?.lastPrice ?? 0;
+
+    // Spot + implied prob
+    let spotPrice: number | null = null;
+    let impliedProb: number | null = null;
+    let rawEdge: number | null = null;
+    let edgeAfterFees: number | null = null;
+    const hoursToRes = market.closesAt
+      ? Math.max(0, (market.closesAt.getTime() - Date.now()) / 3600000)
+      : 24;
+
+    if (parsed && prices[parsed.asset]) {
+      spotPrice = prices[parsed.asset].price;
+      if (parsed.contractType === 'BRACKET' && parsed.bracketWidth > 0) {
+        impliedProb = calculateBracketImpliedProb(spotPrice, parsed.strike, parsed.bracketWidth, hoursToRes);
+      } else if (parsed.contractType === 'FLOOR') {
+        impliedProb = calculateSpotImpliedProb(spotPrice, parsed.strike, hoursToRes);
+      }
+      if (impliedProb != null && marketPrice > 0) {
+        rawEdge = Math.abs(impliedProb - marketPrice);
+        const fee = calculateKalshiFee(marketPrice, 10) / 10;
+        edgeAfterFees = Math.max(0, rawEdge - fee);
+      }
+    }
+
+    // All signals for this market (not just SPEEDEX)
+    const allSignals = await prisma.signal.findMany({
+      where: { marketId: id },
+      orderBy: { createdAt: 'desc' },
+      distinct: ['moduleId'],
+      take: 10,
+    });
+
+    // Latest edge
+    const latestEdge = await prisma.edge.findFirst({
+      where: { marketId: id },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Paper positions on this market
+    const positions = await prisma.paperPosition.findMany({
+      where: { marketId: id },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Direction
+    const direction = impliedProb != null && marketPrice > 0
+      ? (impliedProb > marketPrice ? 'BUY_YES' : 'BUY_NO')
+      : null;
+
+    return {
+      market: {
+        id: market.id,
+        title: market.title,
+        ticker: market.platformMarketId,
+        platform: market.platform,
+        category: market.category,
+        closesAt: market.closesAt,
+        volume: market.volume,
+        liquidity: market.liquidity,
+      },
+      pricing: {
+        marketPrice,
+        spotPrice,
+        asset: parsed?.asset ?? null,
+        strike: parsed?.strike ?? null,
+        contractType: parsed?.contractType ?? 'UNKNOWN',
+        bracketWidth: parsed?.bracketWidth ?? null,
+        impliedProb,
+        rawEdge,
+        edgeAfterFees,
+        hoursToResolution: hoursToRes,
+        direction,
+      },
+      signals: allSignals.map(s => ({
+        moduleId: s.moduleId,
+        probability: s.probability,
+        confidence: s.confidence,
+        reasoning: s.reasoning,
+        createdAt: s.createdAt,
+        metadata: s.metadata,
+      })),
+      edge: latestEdge ? {
+        compositeProb: latestEdge.cortexProbability,
+        marketPrice: latestEdge.marketPrice,
+        edgeMagnitude: latestEdge.edgeMagnitude,
+        edgeDirection: latestEdge.edgeDirection,
+        confidence: latestEdge.confidence,
+        expectedValue: latestEdge.expectedValue,
+        isActionable: latestEdge.isActionable,
+        createdAt: latestEdge.createdAt,
+      } : null,
+      positions: positions.map(p => ({
+        id: p.id,
+        direction: p.direction,
+        entryPrice: p.entryPrice,
+        currentPrice: p.currentPrice,
+        pnl: p.paperPnl,
+        isOpen: p.isOpen,
+        createdAt: p.createdAt,
+      })),
+    };
+  });
+
+  // GET /crypto/bracket-groups — mutually exclusive bracket position groups
+  fastify.get('/crypto/bracket-groups', async () => {
+    const { groupBracketPositions } = await import('@apex/tradex');
+
+    const openPositions = await prisma.paperPosition.findMany({
+      where: { isOpen: true },
+      include: { market: { select: { title: true } } },
+    });
+
+    const bracketPositions = openPositions.map(p => ({
+      marketId: p.marketId,
+      title: p.market?.title ?? '',
+      entryPrice: p.entryPrice,
+      direction: p.direction as 'BUY_YES' | 'BUY_NO',
+    }));
+
+    const groups = groupBracketPositions(bracketPositions);
+
+    return {
+      groups: groups.map(g => ({
+        asset: g.asset,
+        expiry: g.expiryDisplay,
+        positionCount: g.positions.length,
+        combinedCostCents: (g.totalCost * 100).toFixed(1),
+        maxPayoutCents: (g.maxPayout * 100).toFixed(1),
+        combinedEVCents: ((g.maxPayout - g.totalCost) * 100).toFixed(1),
+        isNegativeEV: g.totalCost >= g.maxPayout,
+        positions: g.positions.map(p => ({
+          marketId: p.marketId,
+          title: p.title,
+          entryPriceCents: (p.entryPrice * 100).toFixed(1),
+          direction: p.direction,
+        })),
+      })),
+      totalGroups: groups.length,
+      conflictGroups: groups.filter(g => g.totalCost >= g.maxPayout).length,
+    };
   });
 }

@@ -121,7 +121,7 @@ apex/
 │           ├── index.ts                  # re-exports ExecutionManager, executors, types
 │           ├── types.ts                  # ExecutionMode, PreflightResult, OrderRequest, OrderResult
 │           ├── manager.ts                # ExecutionManager: routing, preflight, circuit breaker
-│           ├── preflight.ts              # 7-gate preflight check implementation
+│           ├── preflight.ts              # 9-gate preflight check implementation
 │           ├── risk-limits.ts            # Risk limit config with hard ceilings
 │           └── executors/
 │               ├── base.ts              # BaseExecutor abstract class
@@ -445,10 +445,11 @@ Delegates probability fusion to the canonical `fuseSignals()` engine in `@apex/c
 2. **Signal filtering**: ARBEX and SPEEDEX excluded from probability synthesis (they produce arb signals, not probability estimates).
 3. **Conflict detection**: Low agreement score (< 0.5) from fusion engine triggers conflict flag.
 4. **Kelly sizing**: Quarter-Kelly formula: `f* = max(0, ((p*b - q) / b) * 0.25)` where `p = cortexProbability`, `q = 1-p`, `b = 1/betPrice - 1`.
-5. **Minimum module requirement**: An edge is only `isActionable` if ALL three conditions are met:
-   - EV exceeds `EDGE_ACTIONABILITY_THRESHOLD` (3%)
+5. **Actionability gates**: An edge is only `isActionable` if ALL four conditions are met:
+   - Net edge (after fee deduction) exceeds `EDGE_ACTIONABILITY_THRESHOLD` (1.5%) — fees already subtracted, this is pure profit margin
+   - Confidence meets `MIN_CONFIDENCE_FOR_ACTIONABLE` (20%) — below this is noise
    - At least 2 modules contributed probability signals
-   - At least 1 LLM module (LEGEX, DOMEX, ALTEX, or REFLEX) contributed — pure statistical signals (COGEX, FLOWEX) alone detect patterns but cannot analyze the actual event
+   - At least 1 LLM module (LEGEX, DOMEX, or ALTEX) contributed — pure statistical signals (COGEX, FLOWEX) alone detect patterns but cannot analyze the actual event
 6. **Actionability summary**: Every edge includes a human-readable `actionabilitySummary` string explaining the CORTEX estimate, direction, contributing modules, and why the edge is/isn't actionable.
 
 ```typescript
@@ -602,7 +603,7 @@ export const api = {
 | `axios` | `^1.7.0` | HTTP client for external APIs |
 | `zod` | `^3.24.0` | Request/response validation |
 | `dotenv` | `^16.4.0` | Env vars |
-| `vitest` | `^3.0.0` | Testing |
+| `vitest` | `^4.1.2` | Testing (root), `^3.2.4` (apps/api) |
 
 #### `apps/dashboard`
 
@@ -1153,7 +1154,7 @@ ANTHROPIC_API_KEY=
 NEWSAPI_KEY=
 BANKROLL=10000                     # total deployable capital
 KELLY_MULTIPLIER=0.25              # fraction of Kelly to use
-LLM_DAILY_BUDGET=5.00              # daily Claude API budget in USD (hard cap)
+LLM_DAILY_BUDGET=10.00             # daily Claude API budget in USD (hard cap)
 ```
 
 ### 2.11 Testing Requirements (Phase 2)
@@ -2125,7 +2126,7 @@ packages/tradex/
     ├── index.ts                    # re-exports ExecutionManager, executors, types
     ├── types.ts                    # ExecutionMode, PreflightResult, OrderRequest, OrderResult
     ├── manager.ts                  # ExecutionManager: routing, preflight, circuit breaker
-    ├── preflight.ts                # 7-gate preflight check implementation
+    ├── preflight.ts                # 9-gate preflight check implementation
     ├── risk-limits.ts              # Risk limit loading from SystemConfig, hard ceiling enforcement
     ├── executors/
     │   ├── base.ts                 # BaseExecutor abstract class
@@ -2242,7 +2243,7 @@ class ExecutionManager {
   // Determines FAST_EXEC vs SLOW_EXEC based on signal source
 
   async preflight(edge: EdgeOutput, platform: Platform): Promise<PreflightResult> {
-    // 7 gates — ALL must pass:
+    // 10 gates — ALL must pass:
     // 1. Risk gate: position size within per-trade limit?
     // 2. Balance check: enough funds on platform?
     // 3. Edge still valid: re-fetch price, recalculate, still > threshold?
@@ -2250,6 +2251,9 @@ class ExecutionManager {
     // 5. Graduation check: edge type graduated from paper? (Phase 5, pass-through until then)
     // 6. Daily limit check: new trade amount under daily cap?
     // 7. Position count check: under max simultaneous positions?
+    // 8. Concentration check: category/event/platform diversification limits?
+    // 9. Market open check: market still active + closesAt > now + 5min buffer?
+    // 10. Bracket conflict: mutually exclusive bracket positions not -EV combined?
   }
 
   async execute(edge: EdgeOutput, platform: Platform, mode: ExecutionMode): Promise<ExecutionLog>;
@@ -2412,7 +2416,15 @@ The monolithic CORTEX engine was split into 4 independent, composable engines:
 - Weighted combination of raw signals from 11 modules
 - Per-module time decay constants (SPEEDEX 5min, CRYPTEX 10min, FLOWEX 30min, ARBEX 15min, etc.)
 - Agreement scoring (0-1 disagreement metric)
-- Module weights: SPEEDEX (0.20), ARBEX (0.18), COGEX (0.15), CRYPTEX (0.15), FLOWEX (0.12), LEGEX (0.10), DOMEX (0.10), ALTEX (0.08), SIGINT (0.08), REFLEX (0.05), NEXUS (0.04)
+- Static base weights: SPEEDEX (0.20), ARBEX (0.18), COGEX (0.15), CRYPTEX (0.15), FLOWEX (0.12), LEGEX (0.10), DOMEX (0.10), ALTEX (0.08), SIGINT (0.08), NEXUS (0.04). REFLEX disabled (weight=0, removed from pipeline)
+- **Adaptive weights**: When `ModuleScore` Brier data is available (from weekly backtest job), weights adapt based on calibration quality. Lower Brier = higher weight. Transition mechanics:
+  - `computeAdaptiveWeights()` converts inverse-Brier scores to relative weights
+  - Blend ratio ramps linearly: 0% adaptive at <10 samples → 100% adaptive at 100+ samples per module
+  - Formula: `finalWeight = (1-alpha)*staticWeight + alpha*adaptiveWeight`
+  - Minimum weight floor of 0.02 — no module is zeroed out
+  - Large weight shifts (>50% from static) logged as warnings
+  - Cold start fallback: static weights used when no `ModuleScore` data exists
+  - Signal pipeline fetches scores once per cycle (90-day lookback) and passes to fusion
 - **Note**: `engine/cortex.ts` delegates to `fuseSignals()` for all probability fusion. There is no duplicate fusion logic — `cortex.ts` handles calibration, edge calculation, and Kelly sizing around the canonical fusion call.
 
 **Calibration Engine** (`calibration-memory.ts`):
@@ -3349,7 +3361,7 @@ Added `withBreaker()` convenience function that returns null instead of throwing
 **Issue 2 — executeArb bypassed all 7 preflight risk gates:**
 `executeArb()` now runs the same safety gates as single-leg execution:
 1. Circuit breaker check for BOTH platforms (abort if either is OPEN)
-2. Full 7-gate preflight on leg 1 executor (daily limits, position limits, exposure)
+2. Full 9-gate preflight on leg 1 executor (daily limits, position limits, exposure)
 3. Only then proceed to place orders
 
 If any gate fails, entire arb is aborted — no orphaned legs.
@@ -3372,12 +3384,15 @@ Concurrent LLM calls did read-modify-write on the DB budget counter, allowing th
 
 **Problem:** Zero test coverage across entire codebase. Every `package.json` had `"test": "echo \"no tests yet\""`. Kelly formula, fee calculations, signal fusion, calibration — none ever tested.
 
-**Solution:** Added vitest with 57 tests covering all critical math and safety logic.
+**Solution:** Added vitest with 126 tests covering all critical math, safety logic, and API layer.
 
 **Test infrastructure:**
-- Vitest installed as monorepo dev dependency
-- `npm test` runs via `turbo test` from root
-- All tests run in 1.7s total (no DB, no API, no external deps)
+- Vitest installed as monorepo dev dependency (v4.1.2 at root, v3.2.4 in apps/api)
+- Root `vitest.config.ts` with `include: ['packages/*/src/**/*.test.ts', 'apps/*/src/**/*.test.ts']` — prevents `dist/` CJS compiled files from being picked up
+- Per-package vitest configs also have explicit `include`/`exclude` for `dist/`
+- `npm test` runs via `turbo test` from root, or `npx vitest run` from root for unified run
+- All 150 tests run in <1s total (no DB, no API, no external deps)
+- Test env vars for apps/api provided in vitest config (DATABASE_URL, API_KEY, etc.) to prevent `process.exit(1)` during config.ts import
 
 **Cortex tests (42 tests across 4 files):**
 
@@ -3388,11 +3403,12 @@ Concurrent LLM calls did read-modify-write on the DB budget counter, allowing th
 | `feature-model.test.ts` | 11 | Default model output bounds, NaN/Infinity features, NaN intercept rejection, NaN weight cleanup, validation accuracy, min samples, schema version |
 | `calibration-memory.test.ts` | 8 | No calibration → passthrough, output bounds, NaN probability, recalibration adjustment, corrupt record skipping |
 
-**Tradex tests (15 tests across 2 files):**
+**Tradex tests (22 tests across 2 files):**
 
 | File | Tests | Covers |
 |------|-------|--------|
-| `preflight.test.ts` | 10 | All 7 gates independently (RISK_GATE, BALANCE_CHECK × 2, EDGE_VALID × 2, FEE_CHECK, GRADUATION_CHECK, DAILY_LIMIT, POSITION_COUNT), all gates pass |
+| `preflight.test.ts` | 21 | All 10 gates independently (RISK_GATE, BALANCE_CHECK × 2, EDGE_VALID × 2, FEE_CHECK, GRADUATION_CHECK, DAILY_LIMIT, POSITION_COUNT, CONCENTRATION × 4, MARKET_OPEN × 7, BRACKET_CONFLICT × 4), all gates pass |
+| `bracket-detection.test.ts` | 16 | Bracket title parsing (ETH, BTC, SOL, non-bracket, floor), group detection (same asset/expiry, different expiry, non-bracket, BUY_NO cost, empty), conflict check (-EV block, +EV allow, non-bracket, different asset, different expiry, BUY_NO, threshold) |
 | `manager.test.ts` | 5 | Circuit breaker opens after failures, open circuit fails fast, arb checks both platforms, arb preflight failure aborts all legs |
 
 ### V2.36 Dependency Injection Interface Layer for Signal Modules (2026-03-27 PM)
@@ -3443,3 +3459,1014 @@ Concurrent LLM calls did read-modify-write on the DB budget counter, allowing th
 | `pm2 monit` | Live monitoring dashboard |
 
 **Claude Code rule:** After code changes that require a restart, run `pm2 restart all`. Never start API/dashboard directly — pm2 manages them.
+
+### V2.39 Fix Test Runner CJS/ESM Mismatch (2026-03-27 PM)
+
+**Problem:** 17 out of 30 test files failed to load because vitest picked up compiled `.js` files from `dist/` directories. These CJS files called `require('vitest')` which fails since vitest v4 is ESM-only. Additionally, 2 API test files crashed because `config.ts` called `process.exit(1)` when env vars were missing. Only 13/30 test files actually ran. Half the test suite was silently broken.
+
+**Root causes:**
+1. No root `vitest.config.ts` — vitest used default glob `**/*.test.{js,ts}` which matched `dist/**/*.test.js`
+2. Per-package configs had `exclude: ['dist/**']` but only worked when vitest ran inside each package directory (via turbo), not from root
+3. `apps/api/vitest.config.ts` had test env vars but no `include`/`exclude`, so `dist/` tests were still discovered
+4. `cortex.test.ts` had stale test expectations (assumed coverage=1/10 cap, expected weights sum to 1.0, used non-LLM modules for actionability test)
+5. `market-matcher.test.ts` tested `findMatchingMarkets()` which now delegates to Prisma DB — tests hit a real (unavailable) database
+
+**Fix:**
+1. Created root `vitest.config.ts` with explicit `include: ['packages/*/src/**/*.test.ts', 'apps/*/src/**/*.test.ts']` and `exclude: ['**/dist/**']`
+2. Added `include: ['src/**/*.test.ts']` to all 3 per-package vitest configs
+3. Added test env vars to root config so API tests don't crash on `process.exit(1)` during config import
+4. Fixed `cortex.test.ts`: updated actionability test to use LLM modules (LEGEX/DOMEX), fixed confidence test to match actual `fuseSignals` coverage formula, replaced weights-sum-to-1 test with signal contribution verification
+5. Fixed `market-matcher.test.ts`: exported `jaccardSimilarity` and `normalizeText` pure functions, rewrote tests to test pure logic instead of DB-dependent wrapper
+
+**Result:** 15 test files, 126 tests, 0 failures, <1s runtime. All tests run from both root (`npx vitest run`) and per-package (`cd packages/cortex && npx vitest run`).
+
+### V2.40 Unified Fee Model — Single Source of Truth (2026-03-27 PM)
+
+**Problem:** Four different Kalshi fee implementations existed across the codebase, using two different formulas:
+- Cortex (opportunity-scoring.ts): `0.07 × (1 - price)` — correct for YES side
+- Tradex (kalshi executor): `0.07 × price × (1 - price)` — wrong symmetric parabola
+- API (fee-calculator.ts): `0.07 × price × (1 - price)` — wrong
+- API (paper-trader.ts): `0.07 × price × (1 - price)` — wrong
+
+At price=0.50: cortex estimated 3.5% fee, tradex computed 1.75%. Position sizes were computed with wrong fee assumptions.
+
+Polymarket fees were hardcoded to 0 everywhere.
+
+**Actual Kalshi fee schedule:** For each contract, fee = min($0.07, 7% × potential_profit). Since potential_profit = (1 - pricePaid) and that's always ≤ $1.00, the fee simplifies to `0.07 × (1 - pricePaid)` per contract. The fee is NOT symmetric — it depends on what you pay, not on `price × (1 - price)`.
+
+**Solution:** Created `packages/shared/src/fees.ts` as the single source of truth:
+
+| Function | Purpose | Used by |
+|----------|---------|---------|
+| `kalshiFeePerContract(pricePaid)` | Per-contract fee in dollars | cortex.ts, paper-trader.ts |
+| `kalshiFee(pricePaid, contracts)` | Total fee (ceil to cent) | KalshiExecutor, fee-calculator.ts |
+| `kalshiRoundTripFeeRate(side, yesPrice, exitPrice?)` | Fee rate for sizing | opportunity-scoring.ts |
+| `polymarketFeePerContract(pricePaid)` | ~2% taker fee | PolymarketExecutor |
+| `polymarketFee(pricePaid, contracts)` | Total Polymarket fee | fee-calculator.ts |
+| `platformFee(platform, pricePaid, contracts)` | Platform-agnostic total | arb calculator |
+| `platformFeeRate(platform, side, yesPrice)` | Platform-agnostic rate | cortex scoring |
+
+**Consumers updated:**
+- `packages/cortex/src/opportunity-scoring.ts` → uses `platformFeeRate()`
+- `packages/tradex/src/executors/kalshi.ts` → uses `kalshiFee()`
+- `packages/tradex/src/executors/polymarket.ts` → uses `polymarketFee()`
+- `apps/api/src/services/fee-calculator.ts` → thin re-export wrapper
+- `apps/api/src/services/paper-trader.ts` → uses `kalshiFeePerContract()`
+- `apps/api/src/engine/cortex.ts` → uses `kalshiFeePerContract()`
+
+**Float-safe rounding:** `Math.round(raw * 1e8) / 1e6` before `Math.ceil()` eliminates floating-point artifacts (e.g., `7.000000000000001 cents → 8 cents`).
+
+**Tests:** 23 new fee tests in `packages/shared/src/__tests__/fees.test.ts` covering per-contract fees, total fees, round-trip estimates, Polymarket fees, platform routing, and cortex/tradex consistency verification.
+
+**Result:** 16 test files, 150 tests, 0 failures. All fee calculations now use a single formula.
+
+### V2.41 Wire ExecutionManager Into Real Code Paths (2026-03-27 PM)
+
+**Problem:** TRADEX ExecutionManager was fully built with 9-gate preflight, circuit breakers, and risk limits, but nothing called `ExecutionManager.execute()` outside tests. The paper trader, arb scanner, and API routes all bypassed it. Safety infrastructure was untested in production.
+
+**Solution:** Created `TradingService` that wraps ExecutionManager with paper trading support, and wired it into both execution paths.
+
+**New files:**
+
+| File | Purpose |
+|------|---------|
+| `apps/api/src/executors/paper-executor.ts` | `BaseExecutor` implementation for paper mode. Returns simulated fills, tracks paper balance from open positions, uses shared fee calculator. |
+| `apps/api/src/services/trading-service.ts` | Singleton that bridges CORTEX edges to TRADEX execution. Builds `PreflightContext` from edge + DB state, calls `ExecutionManager.execute()`, then creates paper position if preflight passes. |
+
+**Trade modes (`TradeMode` added to `@apex/tradex` types):**
+- `PAPER` (default): Runs all 9 preflight gates via ExecutionManager → creates paper position on success
+- `DRY_RUN`: Runs all 9 preflight gates → logs result → does nothing
+- `LIVE`: Runs all 9 preflight gates → places real order via platform executor (future)
+
+**Execution flow (PAPER mode):**
+```
+Signal Pipeline → CORTEX synthesize() → edge.isActionable?
+    ↓ YES
+TradingService.executeEdge(edge)
+    ↓
+Build PreflightContext (tradeSize, currentEdge, fee, limits from DB)
+    ↓
+ExecutionManager.execute(orderRequest, preflightCtx)
+    ↓
+┌─ Circuit breaker check (is platform paused?)
+├─ Gate 1: RISK_GATE (trade size ≤ maxPerTrade)
+├─ Gate 2: BALANCE_CHECK (paper balance available)
+├─ Gate 3: EDGE_VALID (edge > 0)
+├─ Gate 4: FEE_CHECK (edge covers fees)
+├─ Gate 5: GRADUATION_CHECK (bypassed in paper mode)
+├─ Gate 6: DAILY_LIMIT (daily volume ≤ cap)
+└─ Gate 7: POSITION_COUNT (open positions ≤ max)
+    ↓ ALL PASS
+PaperExecutor.placeOrder() → simulated fill
+    ↓
+enterPaperPosition(edge) → DB paper position created
+```
+
+**Signal pipeline wired:** `signal-pipeline.job.ts` now calls `getTradingService().executeEdge(edge)` instead of `enterPaperPosition(edge)` directly. Preflight rejections are logged with reason.
+
+**Arb scanner wired:** `arb-scan.job.ts` now routes URGENT arbs through ExecutionManager circuit breaker checks and preflight validation. Arb pass/fail is logged with details.
+
+**Key design decisions:**
+1. PaperExecutor registered for both KALSHI and POLYMARKET platforms
+2. Paper balance = $1000 simulated, deployed tracked from open paper positions
+3. Graduation gate bypassed in PAPER mode (no need to graduate from paper to paper)
+4. TradingService is a lazy singleton (initialized on first call)
+
+### V2.42 Portfolio Concentration Limits (2026-03-27 PM)
+
+**Problem:** Risk limits enforced per-trade size but not aggregate exposure. Nothing prevented 100% of capital in a single category or correlated events. A miscategorized batch of markets could cause catastrophic concentration.
+
+**Solution:** Added Gate 8 (CONCENTRATION) to the 9-gate preflight sequence, checking 4 concentration dimensions.
+
+**Concentration limits (`ConcentrationLimits` type in `@apex/tradex`):**
+
+| Limit | Default | Hard Ceiling | Purpose |
+|-------|---------|-------------|---------|
+| `maxPerCategory` | 25% | 50% | Max portfolio in one category (POLITICS, CRYPTO, etc.) |
+| `maxPerEvent` | 15% | 30% | Max portfolio in a single market/event |
+| `maxPerPlatform` | 60% | 80% | Max portfolio on one platform (Kalshi/Polymarket) |
+| `maxOpenPositions` | 20 | 50 | Hard cap on total open positions |
+
+**Gate 8 check order:**
+1. Category exposure — sum all positions in same category, reject if > 25% of portfolio
+2. Event exposure — sum all positions in same market, reject if > 15% of portfolio
+3. Platform exposure — sum all positions on same platform, reject if > 60% of portfolio
+4. Position count — reject if ≥ maxOpenPositions
+
+**Integration:**
+- `EdgeOutput` now includes `marketCategory` field (flows from CortexInput through synthesis)
+- `TradingService.executeEdge()` builds `concentration` context from open paper positions + market metadata
+- `PreflightContext.concentration` is optional — omitted = gate skipped (backward compatible)
+- `checkConcentration()` exported standalone for direct use outside preflight
+
+**Tests:** 9 new concentration tests covering: category breach, event breach, platform breach, position count breach, empty portfolio pass, diversified portfolio pass, boundary (exactly at limit = pass, over = block), zero portfolio value edge case.
+
+**Result:** 16 test files, 159 tests, 0 failures.
+
+### V2.43 System Health & Readiness Endpoints (2026-03-28)
+
+**Problem:** No comprehensive health/readiness endpoints. Basic health check only covered 4 services. No way to see module health, circuit breakers, budget, or portfolio status programmatically.
+
+**Solution:** Enhanced `/system/health` to a comprehensive system-wide health dashboard and added `/system/ready` readiness probe.
+
+**`GET /system/health` response sections:**
+
+| Section | Contents |
+|---------|----------|
+| `services.database` | Postgres `SELECT 1` with latency |
+| `services.redis` | Redis `PING` with latency |
+| `services.worker` | BullMQ queue stats: active jobs, failed count, status |
+| `platforms` | Kalshi + Polymarket external API health |
+| `modules` | All 10 modules: signals/24h, last active, healthy/stale/inactive |
+| `circuitBreakers` | All breakers: state (CLOSED/OPEN/HALF_OPEN), failure counts |
+| `budget` | LLM daily spend, limit, percent used, hard limit |
+| `portfolio` | Paper positions, total deployed, unrealized P&L |
+
+**Status logic:** `unhealthy` = core service down or budget exceeded. `degraded` = breaker open or module stale. `healthy` = everything nominal.
+
+**`GET /system/ready`:** Returns 200 if DB + Redis up, 503 otherwise. For load balancer probes.
+
+**Dashboard updated:** System.tsx shows status banner, service cards with latency, circuit breaker panel, portfolio summary.
+
+**Types added to `@apex/shared`:** `ServiceCheck`, `ExternalServiceCheck`, `ModuleHealth`, `CircuitBreakerStatus`, `WorkerStatus`.
+
+### V2.44 Fix Module Provider Injection — Overnight Pipeline Failure (2026-03-28)
+
+**Problem:** System ran overnight but produced 0 new signals, 0 new edges, and 0 new paper trades. Diagnosis found all module singletons were created without their required providers:
+
+- **COGEX** crashed every cycle: `"COGEX requires dataProvider"` — needed `PrismaDataProvider` for price history access. This was the **primary fast module** and its failure meant no math-based signals.
+- **FLOWEX** returned null silently — had `if (!this.dataProvider) return null` guard, so it ran but couldn't access order book data.
+- **LEGEX, DOMEX, ALTEX, REFLEX** (LLM modules) — all had `new XModule()` with no `llmProvider`, so all LLM calls would throw `"requires llmProvider"`.
+
+**Root cause:** The DI refactor (Round 1, V2.3x) created `MarketDataProvider` and `LLMProvider` interfaces and added optional `deps` parameters to module constructors. But the default singletons exported from each module file were still `new XModule()` with no deps — the old pre-DI pattern. The `PrismaDataProvider` and `ClaudeLLMProvider` implementations existed but were never wired to the singletons.
+
+**Fix:** Injected providers into all 6 module singletons:
+
+| Module | Provider Injected |
+|--------|-------------------|
+| `cogex.ts` | `PrismaDataProvider` |
+| `flowex.ts` | `PrismaDataProvider` |
+| `legex.ts` | `ClaudeLLMProvider` |
+| `domex.ts` | `ClaudeLLMProvider` |
+| `altex.ts` | `ClaudeLLMProvider` |
+| `reflex.ts` | `ClaudeLLMProvider` |
+
+**Also fixed:** `/system/ready` endpoint was blocked by auth middleware. Added to auth bypass list alongside `/system/health`.
+
+**Verification:** pm2 restart all → worker picks up new code → signal pipeline runs with all modules having their providers.
+
+### V2.45 Increase Market Throughput and Fix Signal Coverage (2026-03-28 PM)
+
+**Problem:** Pipeline processed only 10 markets/cycle, only ran LLM on 1 market, used a local `new FlowexModule()` without providers (shadowing the fixed singleton), and all 30K+ sports markets were FUTURES (no Fuku match data). Result: 0 actionable edges, 0 paper trades.
+
+**3 bugs fixed:**
+
+1. **Shadowed FlowexModule** — `signal-pipeline.job.ts` line 18 had `const flowexModule = new FlowexModule()` (no providers), shadowing the fixed singleton from `flowex.ts`. Now imports `flowexModule` directly from the module file.
+
+2. **MAX_MARKETS=10** — Way too conservative. Increased to 50 total with tiered selection:
+   - Tier 1: Sports (up to 25) — Fuku = $0 LLM cost
+   - Tier 2: Urgent <7d (up to 10) — highest mispricing
+   - Tier 3: Medium 7-30d (up to 10) — rotation
+   - Tier 4: Long >30d (up to 5) — low priority
+
+3. **LLM scheduling skipped sports** — Sports markets were treated same as paid-LLM markets for scheduling. Now sports ALWAYS get DOMEX (Fuku passthrough, $0 cost). Only non-sports count against `MAX_LLM_MARKETS_PER_CYCLE = 8`.
+
+**Other changes:**
+- `EDGE_ACTIONABILITY_THRESHOLD_POLYMARKET = 0.015` — Polymarket's lower fees (2%) allow tighter edges
+- Reduced recently-analyzed cache from 6h to 2h (faster re-analysis)
+- Lowered `minVolume` from 500 to 200 (catches more sports markets)
+- Per-cycle metrics logging: market counts by tier, signals by module, LLM count, actionable count
+
+**First cycle results after fix:**
+```
+Markets processed: 32 (was 10)
+Sports markets:    25 (was 0 with LLM)
+LLM module runs:    8 (was 1)
+Actionable edges:   2 (was 0) — EV 3.56% and 4.04%
+```
+
+**Result:** 16 test files, 159 tests, 0 failures.
+
+---
+
+### Two-Phase Signal Pipeline
+
+**Problem:** Processing 32 markets out of 30,538 (0.1%). Random sampling misses edge. LLM cost is the constraint — can't run full analysis on all 30K markets.
+
+**Solution:** Two-phase pipeline that scans broadly with cheap signals, then focuses LLM budget on the best candidates.
+
+#### Phase 0: Build Scan Pool
+
+Query DB for tradeable markets with basic filters:
+- Status ACTIVE, not expired, resolves within 90 days
+- YES price between $0.03 and $0.97 (not already resolved)
+- Has liquidity signal: volume ≥ $50, or has order book, or recent price movement
+- Spread < $0.15 (tradeable)
+
+Implementation: `apps/api/src/services/market-scanner.ts` → `buildScanPool()`
+
+#### Phase 1: Scan (Cheap, Broad)
+
+Score all scan pool markets using zero-LLM-cost quantitative checks. Produces a screening score (0-100) per market.
+
+**Scoring heuristics:**
+| Signal | Points | Condition |
+|--------|--------|-----------|
+| Price movement (4h) | 0-25 | >10% = 25, >5% = 18, >2% = 10 |
+| Order book imbalance | 0-15 | >60/40 = 15, >55/45 = 8 |
+| Fuku coverage (sports) | 0-25 | Fuku sport = 15, + imminent match = 10 |
+| Time urgency | 0-15 | <1d = 15, <3d = 12, <7d = 8 |
+| Market freshness | 0-10 | <24h = 10, <72h = 5 |
+| Volume activity | 0-10 | >$10K = 10, >$2K = 6, >$500 = 3 |
+| Stale penalty | -10 | No price change in 24h |
+| Recently scanned | -5 | Has signals from last 3h |
+
+Implementation: `apps/api/src/services/market-scanner.ts` → `scanMarkets()`
+
+Goal: scan 500-1000+ markets per cycle in under 60 seconds.
+
+#### Phase 2: Deep Analyze (LLM, Selective)
+
+Take top-N markets from Phase 1 and run full LLM analysis:
+- **Sports markets:** DOMEX via Fuku (free, up to 50 markets)
+- **Non-sports markets:** LEGEX + DOMEX + ALTEX + REFLEX (budget-gated)
+
+N is budget-constrained:
+- `calculateDeepAnalysisBudget(remainingBudget)` → min(budget / cost_per_market / cycles_left, 30)
+- Minimum 10, maximum 30 non-sports markets per cycle
+
+CORTEX fusion combines ALL signals (Phase 1 cheap + Phase 2 LLM) for actionable edge detection.
+
+#### Cycle Timing (15-minute cycle)
+- Minutes 0-1: Phase 0+1 scan (500+ markets)
+- Minutes 1-5: Phase 2 deep analysis (top 20-30)
+- Minutes 5-10: CORTEX fusion, scoring, paper trading
+- Minutes 10-15: idle/buffer
+
+#### Metrics Logged Per Cycle
+```
+[SCAN] Scanned 847 markets in 23s
+[SCAN] Top candidates: 31 markets with score > 20
+[SCAN] Breakdown: 12 price-movement, 8 flow-anomaly, 6 fuku-edge, 5 new-market
+[DEEP] Analyzing 25 markets (budget: $0.04 remaining)
+[DEEP] LLM calls: 25 ALTEX, 25 LEGEX, 20 REFLEX
+[FUSE] Edges: 47 total, 5 actionable
+[TRADE] Paper trades: 2 created, 1 rejected (concentration limit)
+```
+
+#### Paper Trading Limits (Loosened for Signal Validation)
+
+Defaults updated for paper mode — trading virtual money to validate signal quality:
+- `maxPerTrade`: $10 → $500
+- `maxDailyNewTrades`: $30 → $500
+- `maxSimultaneousPositions`: 5 → 20
+- `maxTotalDeployed`: $100 → $5,000
+- `dailyPnlHalt`: -$15 → -$200
+
+Hard ceilings unchanged (safety net for live mode).
+
+#### Price Fallback Chain
+
+Many Polymarket markets have `bestAsk` but no `lastPrice` on the YES contract. The scanner uses a fallback chain:
+1. `lastPrice` (primary)
+2. `(bestBid + bestAsk) / 2` (midpoint)
+3. `bestAsk` (ask-only)
+4. `bestBid` (bid-only)
+
+This expanded the scan pool from ~260 to ~600 markets.
+
+#### Paper Trade Fee Fix
+
+The preflight FEE_CHECK gate computes `edgeMagnitude × tradeSize` vs `fee` in dollar terms. But `kellySize` from CORTEX is a fraction (e.g., 0.0125 = 1.25% of bankroll), not dollars. Without scaling, the dollar-edge is always tiny vs the dollar-fee → 100% rejection rate.
+
+Fix: In paper mode, scale `kellySize × $1000 paperBankroll` to get meaningful dollar trade sizes. The fee check now correctly compares dollar-scale edge ($10-50) vs dollar-scale fees ($3-50).
+
+#### First Cycle Results (Two-Phase)
+```
+Phase 0: 82ms — scan pool built
+Phase 1: 298ms — 599 markets scanned
+Phase 2: 98s — 199 markets deep-analyzed
+  Sports:     149 (all Fuku-covered, $0 cost)
+  Non-sports:  50 (13 got LLM calls)
+  LLM calls:   DOMEX 22, LEGEX 3, ALTEX 0*, REFLEX 0*
+  (* deduped — same signals as recent runs)
+Signals:   201 total (COGEX 163, DOMEX 22, SPEEDEX 13, LEGEX 3)
+Edges:     163 total, 16 actionable
+Trades:    6 paper trades created, 10 rejected (FEE_CHECK — edge < fees)
+Total:     99 seconds
+```
+
+Compared to previous approach (32 markets, 0-2 actionable edges, 0 trades):
+- **19× more markets scanned** (599 vs 32)
+- **6× more markets deep-analyzed** (199 vs 32)
+- **8× more actionable edges** (16 vs 2)
+- **6 paper trades** (vs 0)
+
+### V2.28 APEX_SPEED Re-enabled — Event-Driven Streaming Architecture (2026-03-28)
+
+**Problem:** APEX_SPEED was paused since early development due to:
+1. Binance.com WebSocket geo-blocked in US
+2. CoinGecko fallback produced stale prices (30s cache)
+3. Kalshi crypto bracket probability model used hardcoded volatility
+4. 0-hour expiry contracts caused issues
+5. 30-second polling cycle was too slow for crypto edge detection
+
+**Fix — Binance.US WebSocket** (`apps/api/src/services/data-sources/binance-ws.ts`):
+- Switched from `wss://stream.binance.com:9443` to `wss://stream.binance.us:9443`
+- Same WebSocket protocol/message format, no geo-blocking for US users
+- No API key required for public market data
+- Added 30-minute rolling price buffer for volatility calculation
+- Added `getVolatility(symbol, minutes)` — calculates realized annualized vol from 10s-sampled log returns
+- Added `getPriceAt(symbol, secondsAgo)` — historical price lookup from buffer
+- Added `getLatestPrice(symbol)` — synchronous, no fallback
+- Added circuit breaker: 15 consecutive reconnect failures → circuit opens for 5 minutes
+- Added `isHealthy()` check (connected + not stale + circuit closed)
+- Emits `'price'` event on every trade tick for event-driven consumers
+- Keep-alive pings every 3 minutes
+
+**Fix — Bracket probability model with real volatility** (`apps/api/src/services/crypto-price.ts`):
+- `calculateBracketImpliedProb()` and `calculateSpotImpliedProb()` now accept optional `volatility` parameter (annualized)
+- When provided, overrides the default 0.6% hourly assumption with real-time realized vol from Binance.US
+- Added `calculateBracketProbability(currentPrice, lowerBound, upperBound, hoursToExpiry, volatility)` convenience wrapper
+- Added `annualizedToHourly()` conversion utility
+
+**Fix — Short expiry contracts** (`apps/api/src/services/crypto-price.ts`):
+- < 5 min to expiry: uses position-relative model (inside bracket → 60-85%, outside → 1-15%)
+- Inside bracket: probability scales with distance from center (0.85 at center, 0.65 at edge)
+- Outside bracket: probability drops with distance from nearest bracket edge
+- < 2 min to expiry: excluded from trading entirely (`MIN_TIME_TO_EXPIRY_SEC = 120`)
+
+**Fix — Event-driven architecture** (`apps/api/src/speed-worker.ts`):
+- NOT a polling cycle. Persistent streaming process that reacts to Binance.US price ticks in real-time.
+- On every tick: recalculates bracket probabilities for all active crypto markets
+- Compares against cached Kalshi prices (refreshed every 45 seconds from DB)
+- Edge must persist ≥ 10 seconds before acting (filters flickering edges)
+- Max 1 trade per market per 5 minutes (cooldown throttle)
+- Market list refreshed from DB every 5 minutes
+- Creates paper trades when edge persists and exceeds 3% after fees
+- Runs as `apex-speed` pm2 process — separate from API and worker
+
+**SPEEDEX module updated** (`apps/api/src/modules/speedex.ts`):
+- Prefers Binance.US WebSocket prices (ms latency) over CoinGecko (30s cache)
+- Uses real-time realized volatility from `binanceWs.getVolatility()` when available
+- Detects high-gamma situations (price near bracket edge → rapid probability change)
+- Excludes markets < 2 minutes to expiry
+- Logs price source (binance_ws vs coingecko) in signal metadata
+
+**PM2 configuration** (`ecosystem.config.cjs`):
+- Added `apex-speed` process entry alongside apex-api, apex-worker, apex-dashboard
+- `BINANCE_WS_ENABLED=true` — no longer disabled by default
+- Auto-restart with max 10 restarts, 2s delay
+- Separate log files: `logs/speed.log`, `logs/speed-error.log`
+
+**Config updated** (`apps/api/src/config.ts`):
+- `BINANCE_WS_ENABLED` default changed from `false` to `true`
+
+**Tests added** (`apps/api/src/__tests__/speed-pipeline.test.ts`):
+- 32 tests covering bracket probability, floor probability, short expiry handling, volatility conversion, ticker parsing, edge detection scenarios
+
+### V2.29 Trade Detail Panel — Full Signal Analysis Per Position (2026-03-28)
+
+**Problem:** Paper positions on the Backtest page showed basic info (market, direction, entry, current, edge, P&L, status) but no detail on WHY the system took the trade. Impossible to evaluate signal quality without seeing the full analysis.
+
+**New API endpoint** — `GET /api/v1/paper-positions/:id/details`:
+Returns comprehensive trade detail including:
+- **Position data**: entry/current price, kelly size, P&L, direction, fees, time held
+- **Market context**: title, platform, category, status, resolution, volume, closes-at
+- **Entry edge**: CORTEX probability, market price, edge magnitude, direction, confidence, EV, kelly size, actionability summary, conflict flag, full signal contributions (from Edge.signals JSON)
+- **Current edge**: latest edge for same market — shows if edge grew or shrank since entry
+- **All contributing signals**: deduplicated by module (most recent per module within 20-min window around entry). Each signal includes probability, confidence, reasoning, and full metadata JSON
+- **Fee breakdown**: entry fee, estimated exit fee, total fees, net EV after fees (uses `kalshiFeePerContract`)
+- **Preflight gates**: EV >= 3%, Confidence >= 20%, 2+ modules, 1+ LLM module, fee check — each with pass/fail and actual value
+- **Outcome** (for closed/resolved): exit price, P&L, direction correctness, resolution, close reason
+
+**Signal lookup strategy**: Searches for signals within 20 minutes before to 5 minutes after position creation (signal pipeline runs every 15 min). Deduplicates to keep only the most recent signal per module.
+
+**Live-performance endpoint updated** — `GET /api/v1/backtest/live-performance`:
+- Now includes `id` field on each position in the response (needed for linking to detail page)
+
+**Dashboard — TradeDetail page** (`apps/dashboard/src/pages/TradeDetail.tsx`):
+- Route: `/trades/:id` — accessible by clicking any paper position row
+- **Header section**: full market title, platform/category/status/direction pills, P&L, entry/current price, time held, volume
+- **Trade thesis panel**: fair value at entry, market price at entry, edge at entry vs current edge, confidence, direction, actionability summary. Edge trend indicator (GROWN/SHRUNK/STABLE)
+- **Signal breakdown**: summary table (module, probability, confidence, data source, summary) + expandable signal cards with:
+  - Probability gauge (visual bar with module color)
+  - Confidence bar
+  - Module-specific metadata pills (LEGEX ambiguity, DOMEX agents/agreement, ALTEX news direction, COGEX bias adjustments, FLOWEX OFI/move type, SPEEDEX contract type/feed/gamma)
+  - DOMEX feature vector display (projectedSpread, offensiveEfficiencyDiff, etc.)
+  - Expandable reasoning text
+- **Position sizing panel**: kelly fraction, quarter-kelly, entry/exit fees, net EV
+- **Preflight gates panel**: checkmark/cross for each gate with actual values
+- **Outcome panel** (for closed positions): exit price, P&L, direction correctness, resolution, close reason
+
+**Navigation flow**:
+- Backtest page → click paper position row → `/trades/:id` (TradeDetail page)
+- TradeDetail page → "Back to Performance" link → `/backtest`
+- TradeDetail page → "View live signals" link → `/markets/:id/signals` (SignalViewer)
+
+**Router updated** (`apps/dashboard/src/App.tsx`):
+- Added `<Route path="/trades/:id" element={<TradeDetail />} />`
+
+**Follows existing patterns**: TradeDetail reuses the same card/stat/pill/gauge patterns from SignalViewer and Backtest pages. Module-specific metadata rendering matches SignalViewer's `ModuleContext` component.
+
+---
+
+### V2.26 Expired Market Trading Audit (2026-03-29)
+
+**Investigation:** Checked whether APEX placed paper trades on markets after they had already closed (March 26 markets visible in portfolio on March 28).
+
+**Verdict: No expired-market trades found.** All 17 paper positions have `createdAt < closesAt`. Two trades were placed ~1 minute before market close, which is valid but tight.
+
+**Defensive gaps identified (could allow future expired-market trades):**
+
+1. **Arb scanner missing `closesAt` filter** — `arbex.ts` queries `status: 'ACTIVE'` but does NOT filter `closesAt > now`. If a market's status update lags behind its actual close time, the arb scanner will include it.
+2. **`getPrecomputedMatches()` has no expiry filter** — `market-matcher.ts` returns all pre-computed matches above confidence threshold regardless of whether either market has expired. Stale matches persist indefinitely.
+3. **TRADEX preflight has no market-open gate** — 8 preflight gates exist (risk, balance, edge validity, fee, graduation, daily limit, position count, concentration) but none check that the target market's `closesAt` is still in the future. The `PreflightContext` interface doesn't even include `closesAt`.
+
+**Signal pipeline scan pool is safe** — `market-scanner.ts:buildScanPool()` correctly filters `status = 'ACTIVE' AND closesAt > now`.
+
+**Fixes applied (2026-03-29):**
+
+1. **Gate 9 `MARKET_OPEN` added to `preflight.ts`**: Added `marketClosesAt` and `marketStatus` to `PreflightContext`. Gate checks market status is `ACTIVE`, `closesAt > now`, and enforces a 5-minute buffer to avoid boundary race conditions. 7 new tests (open, closed, 3min buffer fail, 10min buffer pass, CLOSED status, RESOLVED status, no-closesAt skip). Wired into `TradingService` via `getMarketOpenData()` DB lookup.
+2. **`closesAt > now` filter added to `arbex.ts`**: Arb scanner query now includes `closesAt: { gt: now }` alongside existing `status: 'ACTIVE'` filter.
+3. **Expiry filter added to `getPrecomputedMatches()` in `market-matcher.ts`**: Query now requires both Kalshi and Polymarket markets to be `status: 'ACTIVE'` with `closesAt > now`. Stale matches for expired markets are automatically excluded.
+
+**Preflight is now 10 gates:** RISK_GATE, BALANCE_CHECK, EDGE_VALID, FEE_CHECK, GRADUATION_CHECK, DAILY_LIMIT, POSITION_COUNT, CONCENTRATION, MARKET_OPEN, BRACKET_CONFLICT.
+
+4. **Gate 10 `BRACKET_CONFLICT` added to `preflight.ts`** (2026-03-29): Detects mutually exclusive bracket positions on the same underlying asset + expiry. When CORTEX evaluates bracket markets independently, it may buy YES on multiple brackets (e.g. ETH $1,970-$2,010, $2,010-$2,050, $2,050-$2,090) — but only one can resolve YES. Gate 10 calculates the combined cost of all BUY_YES positions in the bracket group and rejects if total cost >= max payout minus 2¢ fee margin. Implementation:
+   - `bracket-detection.ts`: `parseBracketTitle()` extracts asset + expiry from market titles, `groupBracketPositions()` clusters open positions into groups, `checkBracketConflict()` evaluates combined EV
+   - `BracketConflictContext` added to `PreflightContext` (optional — gate skipped if not provided)
+   - `TradingService` queries all open paper positions with market titles via `getOpenBracketPositions()`
+   - `GET /crypto/bracket-groups` API route returns grouped bracket positions with combined cost/EV
+   - Dashboard Crypto page shows bracket group summary with conflict warnings
+   - 16 new tests in `bracket-detection.test.ts`, 4 new tests in `preflight.test.ts`
+
+5. **Market Resolution Sync added to `market-sync.ts`** (2026-03-29): The market sync job only fetched `status='open'` markets from Kalshi, so settled markets never got their `resolution` field updated in the DB. This broke the entire learning pipeline: position-sync couldn't close positions on resolution, `linkResolutionOutcomes()` couldn't label TrainingSnapshots, FeatureModel had no training data, and Hit Rate stayed at 0.
+
+   **Root cause**: `fetchMarketsRaw()` and `fetchCryptoSeriesMarkets()` both query `status: 'open'`. `fetchResolvedMarkets()` existed but was only called from the backtest route, not from the scheduled 5-minute sync.
+
+   **Fix**: Added `syncResolutions()` to `runMarketSync()` — runs every 5 minutes as part of the existing market sync:
+   - `fetchResolvedCryptoMarkets()` in kalshi-client.ts: queries each crypto series with `status: 'closed'`, collects markets with `result` field
+   - `fetchResolvedGeneralMarkets()` in kalshi-client.ts: queries closed general events (3 pages max)
+   - `syncResolutions()` in market-sync.ts: only updates markets already in DB, skips already-resolved markets
+   - `POST /system/trigger-resolution-sync` route: manual backfill trigger that runs sync + reconciliation + reports training data stats
+   - 17 new tests in `resolution-sync.test.ts`
+
+   **Data flow after fix**: market-sync (5 min) → `syncResolutions()` → Market.resolution = YES/NO → position-reconciliation (5 min) → PaperPosition.closeReason = 'RESOLVED' → `linkResolutionOutcomes()` → TrainingSnapshot.outcome = 1/0 → learning-loop (weekly) → FeatureModel trains on labeled data
+
+---
+
+### V2.27 Module Skip Rules — Cost-Efficient Signal Generation (2026-03-29)
+
+**Problem:** LEGEX was running on crypto bracket markets where it can't contribute meaningful signal, wasting LLM spend. LEGEX returned 6% confidence on a crypto bracket market (ETH $2,030-$2,070) flagging "timing ambiguity around the 60-second averaging window" — not actionable, just wasted cost. Bracket markets resolve on numeric thresholds (price feeds), not subjective criteria.
+
+**Solution:** Added a configurable module skip rules system (`module-skip-rules.ts`) that prevents LLM modules from running on market types where they add no value.
+
+**Skip rules:**
+
+| Module | Skipped When | Reason |
+|--------|-------------|--------|
+| LEGEX | ALL bracket markets (any category) | Bracket markets resolve on numeric thresholds — no contract ambiguity to analyze |
+| ALTEX | Never skipped | News drives crypto prices (Fed announcements, exchange hacks, regulatory actions swing BTC 5-10% in minutes). Runs on ALL categories. |
+| DOMEX | No skip rules | Agent routing handles market-type awareness (SPORTS-EDGE, CRYPTO-ALPHA) |
+| REFLEX | No skip rules | Reflexivity applies to all market types |
+| COGEX, FLOWEX, SPEEDEX, ARBEX | No skip rules | Quantitative/free modules — run on everything |
+
+**Bracket detection** (`isBracketMarket(title)`) — title pattern matching:
+- Price range: `$X,XXX-$X,XXX`, `$X,XXX - $X,XXX`
+- Price keywords: "price at", "price range", "price between"
+- Floor/ceiling: "above $X", "below $X", "over $X", "under $X"
+- Crypto asset detection for mixed-category markets
+
+**Integration:** Skip rules checked in `signal-pipeline.job.ts` Phase 2 before LEGEX invocation. Skipped modules are never called — zero LLM spend. Skip metrics logged per cycle: modules skipped, estimated LLM calls saved (LEGEX saves 2 calls per skip: screen + analysis).
+
+**Tests:** 21 tests in `module-skip-rules.test.ts`:
+- Bracket detection (price ranges, price-at patterns, above/below, non-bracket rejection)
+- LEGEX skip rules (crypto bracket, any-category bracket, politics runs, culture runs)
+- ALTEX never skipped (crypto brackets, politics, non-bracket crypto all run)
+- Quantitative modules never skipped (COGEX, FLOWEX, SPEEDEX, ARBEX)
+- Skip tracker metrics and LLM call savings estimation
+
+**Cost impact:** On a typical cycle with ~100 bracket markets in the deep analysis pool, skip rules prevent ~200 LEGEX LLM calls per cycle, directly supporting the <$2/day LLM cost target.
+
+### V2.37 Directional Bias Fix: BUY_YES/BUY_NO Balance (2026-03-29)
+
+**Problem:** All 17 paper positions were BUY_YES — zero BUY_NO. A properly calibrated system should produce roughly balanced directional signals. 17/17 BUY_YES indicates systematic upward bias in probability estimation, not a real edge.
+
+**Root causes identified:**
+
+**Root Cause 1 (CRITICAL) — DOMEX FeatureModel untrained default bias:**
+The `predict()` function in `packages/cortex/src/feature-model.ts` uses logistic regression with `intercept=0` and `sampleSize=0` (untrained). Feature values are NOT normalized — `eloRating` (~1500), `fedFundsRate` (~5.25), `caseAgeMonths` (~6) are on wildly different scales. With mostly positive default weights applied to large raw values, the logit sum is systematically positive, producing `sigmoid(positive_logit) >> 0.5` for virtually every market. Example: `sportsEdge.bookmakerImpliedProb(3.0) × 0.5 = 1.5` + `eloRating(0.001) × 1500 = 1.5` → logit ≈ 3+ → probability ≈ 0.95.
+
+**Fix:** When model is untrained (`sampleSize < MIN_TRAINING_SAMPLES`), `predict()` returns `marketPrice` as the probability with minimal confidence (0.05). The model only adds value after training on resolved markets with enough data to learn real feature effects. Corrupted model fallbacks also use `marketPrice` instead of hardcoded 0.5.
+
+**Root Cause 2 — COGEX adjustment drift in low-data regime:**
+COGEX's bias adjustments (anchoring, tail-risk, recency, favorite-longshot) are individually designed to be symmetric, but in practice the scan pool contains more low-priced markets than high-priced ones. Tail-risk only pushes UP for low-priced markets. Without sufficient calibration data to validate adjustments, this creates net positive drift.
+
+**Fix:** Added shrinkage factor to COGEX combined adjustment that scales with calibration data availability. With no resolved market data, adjustments are halved (50% shrinkage). With 100+ calibration samples in the same price range, adjustments apply at full strength. This prevents uncalibrated adjustments from injecting systematic bias.
+
+**Root Cause 3 — No directional monitoring:**
+There was no logging or alerting on BUY_YES vs BUY_NO distribution, so the bias went undetected through 17 positions.
+
+**Fix:** Added per-cycle directional ratio tracking to `signal-pipeline.job.ts`:
+- Logs `buyYesCount`, `buyNoCount`, `buyYesRatio` in every cycle summary
+- Logs per-module directional breakdown (`edgeDirectionsByModule`)
+- Fires a `DIRECTIONAL BIAS ALERT` warning when BUY_YES ratio exceeds 75% or falls below 25% in a cycle with 10+ edges
+
+**Files changed:**
+- `packages/cortex/src/feature-model.ts` — untrained model returns marketPrice, not biased logistic regression
+- `apps/api/src/modules/cogex.ts` — shrinkage factor on combined adjustment; `getCalibrationSampleCount()` helper
+- `apps/api/src/jobs/signal-pipeline.job.ts` — directional ratio tracking and bias alerts
+
+**System health metric:** BUY_YES/BUY_NO ratio should be monitored as a system health indicator. Sustained deviation from ~50/50 indicates module probability bias requiring investigation.
+
+### V2.38 LLM Cost Audit & Budget Enforcement (2026-03-29)
+
+**Problem:** Independent review estimated ~$135/day LLM spend. Investigation needed to verify actual costs, confirm <$2/day target is achievable, and ensure cost controls are airtight.
+
+**Actual spend (last 7 days, from `ApiUsageLog`):**
+
+| Date | Spend | Calls | Avg/Call |
+|------|-------|-------|----------|
+| Mar 25 | $25.43 | 15,065 | $0.0017 |
+| Mar 26 | $3.21 | 778 | $0.0041 |
+| Mar 27 | $2.39 | 663 | $0.0036 |
+| Mar 28 | $1.29 | 390 | $0.0033 |
+
+**Cost breakdown by task (7-day total):**
+
+| Task | Cost | Calls | Avg/Call | Tier |
+|------|------|-------|----------|------|
+| SCREEN_MARKET | $21.08 | 14,576 | $0.0014 | TIER_1 (Haiku) |
+| LEGEX_ANALYSIS | $3.89 | 399 | $0.0097 | TIER_2 (Sonnet) |
+| ALTEX_ANALYSIS | $2.62 | 659 | $0.0040 | TIER_2 |
+| REFLEX_ANALYSIS | $2.52 | 631 | $0.0040 | TIER_2 |
+| DOMEX_AGENT | $1.08 | 181 | $0.0060 | TIER_2 |
+| DOMEX_FEATURE_EXTRACT | $0.86 | 441 | $0.0020 | TIER_1 (Haiku) |
+| NEXUS_CAUSAL | $0.27 | 9 | $0.0300 | TIER_2 |
+
+**Root cause of $25.43 spike (Mar 25):** Before the two-phase scanner was implemented, the pipeline ran `SCREEN_MARKET` (TIER_1 Haiku) on every market in the scan pool — 14,576 calls in one day. The new scanner uses free modules (COGEX/FLOWEX/SPEEDEX) for Phase 1 screening, eliminating this entirely.
+
+**Bug found: DB budget vs code HARD_LIMIT mismatch:**
+- Code `HARD_LIMIT = $5.00` (kills calls at $5/day)
+- DB `dailyBudget = $25.00` (used for throttling thresholds)
+- Result: Adaptive rate limiting (50% throttle at $12.50, 80% at $20) never triggered because HARD_LIMIT killed calls at $5 first
+- The throttling system was effectively disabled
+
+**Fixes applied:**
+1. **DB budget corrected** from $25 to $5 — adaptive throttling now works:
+   - 50% ($2.50): reduce to 50 calls/hr
+   - 80% ($4.00): reduce to 10 calls/hr
+   - 100% ($5.00): HARD KILL
+2. **Startup enforcement**: `initBudgetTracker()` now clamps DB `dailyBudget` to `HARD_LIMIT` on every startup. Prevents future drift from manual DB edits.
+3. **setLLMDailyBudget()** now clamps to HARD_LIMIT — API cannot set budget above the code-level kill switch.
+
+**Current status: <$2/day target IS being met** (Mar 28: $1.29). The two-phase scanner, LLM result caching (12-24hr TTL), LEGEX skip rules for bracket markets, and DOMEX Haiku demotion all contribute to keeping costs under control.
+
+**Files changed:**
+- `apps/api/src/services/llm-budget-tracker.ts` — startup budget clamp, setLLMDailyBudget clamp, stale comment fix
+
+### V2.39 Training Data Collection & Calibration Tracking (2026-03-29)
+
+**Problem:** FeatureModel has `sampleSize: 0` — it has never trained because there are no resolved markets with feature vectors saved. The calibration feedback loop has no decile-bucketed tracking for dashboard visibility. These are the two prerequisites for APEX to generate real alpha from DOMEX.
+
+**Solution: Three-layer data collection pipeline:**
+
+**1. TrainingSnapshot table (append-only)**
+
+New Prisma model `TrainingSnapshot` captures every CORTEX synthesis:
+- `cortexProbability`, `marketPrice`, `edgeDirection`, `edgeMagnitude`, `confidence`
+- `daysToResolution`, `marketCategory`
+- `moduleOutputs` (JSON): each module's raw probability + confidence (e.g., `{ COGEX: { prob: 0.42, conf: 0.3 }, DOMEX: { prob: 0.55, conf: 0.2 } }`)
+- `featureVector` (JSON): full FeatureVector from DOMEX signal metadata (if available)
+- `featureSchemaVersion`: prevents old schema data from polluting training
+- `outcome` (nullable): filled when market resolves (1=YES, 0=NO)
+- `resolvedAt`: timestamp when resolution was recorded
+
+Saved by `persistTrainingSnapshot()` in `apps/api/src/engine/cortex.ts`, called from `signal-pipeline.job.ts` after every `persistEdge()`. Non-fatal — pipeline continues if snapshot save fails.
+
+**2. Resolution outcome linking**
+
+`linkResolutionOutcomes()` in `apps/api/src/services/position-sync.ts` runs every 5 minutes as part of position reconciliation:
+- Finds all TrainingSnapshots with `outcome: null` whose market has resolved
+- Fills in `outcome` (1 or 0) and `resolvedAt`
+- Batches up to 500 snapshots per run to avoid memory issues
+- This builds the labeled dataset the FeatureModel needs
+
+**3. CalibrationResult table (decile bucketing)**
+
+New Prisma model `CalibrationResult` stores calibration by probability decile:
+- 10 buckets: 0-10%, 10-20%, ..., 90-100%
+- Per bucket: `positionCount`, `winCount`, `predictedAvg`, `actualWinRate`, `calibrationError`
+- `calibrationError = predictedAvg - actualWinRate` (positive = overconfident)
+
+Computed by `computeCalibrationDeciles()` in `learning-loop.job.ts`, runs weekly. Also generates a log report.
+
+**4. Learning loop enrichment**
+
+The existing weekly learning loop now also checks `TrainingSnapshot.featureVector` as a fallback when no DOMEX signal is found on the Signal table. This ensures markets analyzed after V2.39 have their feature vectors available for training even if the old Signal metadata format changes.
+
+**5. Dashboard: Training & Calibration section**
+
+New section on System Monitor page showing:
+- **Training Snapshots**: total / resolved / pending counts
+- **FeatureModel**: trained/untrained status, sample size, validation accuracy
+- **Directional Balance**: BUY_YES/BUY_NO ratio (7-day, with red alert if >75% or <25%)
+- **Calibration by Decile**: table of predicted vs actual win rates per bucket
+
+API endpoint: `GET /system/training-status`
+
+**Files changed:**
+- `packages/db/prisma/schema.prisma` — `TrainingSnapshot` + `CalibrationResult` models
+- `apps/api/src/engine/cortex.ts` — `persistTrainingSnapshot()` function
+- `apps/api/src/jobs/signal-pipeline.job.ts` — calls `persistTrainingSnapshot()` after every edge
+- `apps/api/src/services/position-sync.ts` — `linkResolutionOutcomes()` function
+- `apps/api/src/jobs/learning-loop.job.ts` — `computeCalibrationDeciles()`, TrainingSnapshot fallback for feature vectors
+- `apps/api/src/routes/system.ts` — `GET /system/training-status` endpoint
+- `apps/dashboard/src/api/client.ts` — `getTrainingStatus()` API method
+- `apps/dashboard/src/pages/System.tsx` — Training & Calibration dashboard section
+
+---
+
+## Code Review #3 — Findings Summary (2026-03-29)
+
+### Grades
+
+| Category | Review 1 | Review 2 | Review 3 | Trend |
+|----------|----------|----------|----------|-------|
+| Architecture | B- | B+ | A- | ↑ |
+| Code Quality | D+ | C+ | B- | ↑ |
+| Signal Quality | — | — | B | NEW |
+| Strategy & Edge | B | B+ | B+ | → |
+| Execution Readiness | — | — | B+ | NEW |
+| Operational Stability | — | — | B | NEW |
+| Cost Efficiency | — | — | A- | NEW |
+
+### Key Architectural Decisions Validated
+- **priceLevel excluded from FeatureModel** (`feature-model.ts:105`, weight=0) — prevents anchoring
+- **DOMEX agents don't receive market price** (`domex.ts:42-45`) — correct feature extraction arch
+- **Two-phase scan** reduces LLM costs ~95% (800 markets → 15-50 LLM calls)
+- **Quarter-Kelly sizing** correctly implemented in cortex and opportunity-scoring
+- **Fee model unified** in `packages/shared/src/fees.ts` — single source of truth
+
+### Known Issues (see TODO.md for full list)
+- ~~**LEGEX, ALTEX, REFLEX** leak market price to LLM prompts (anchoring bias)~~ — **FIXED**: all LLM modules now operate without market price, matching DOMEX pattern
+- ~~**REFLEX** has no validation mechanism — unfalsifiable LLM analysis~~ — **DISABLED**: removed from signal pipeline, fusion weight set to 0. Code retained for potential re-enablement. Saves $1-2/day LLM cost.
+- ~~**4 preflight tests failing** — stale risk limit defaults after config change~~ — **FIXED**: tests use explicit `TEST_LIMITS` instead of `DEFAULT_RISK_LIMITS`
+- ~~**No PM2 memory limits** — processes can OOM~~ — **FIXED**: `max_memory_restart: '512M'` added to all 4 PM2 processes
+- ~~**Binance WS ping interval leak**~~ — **FIXED**: interval stored as instance field, cleared on stop/reconnect/close
+- **Polymarket executor stubbed** — can only trade on Kalshi
+- ~~**Signal fusion weights are static** — not learned from module performance data~~ — **FIXED**: adaptive weights derived from `ModuleScore` Brier data, blended with static priors
+
+### V2.46 SPORTS-EDGE Futures Pattern Hardening + Time-Horizon Audit (2026-03-29)
+
+**Problem:** While SPORTS-EDGE already detected MATCH vs FUTURES markets (V2.25), three pattern gaps allowed some futures markets to slip through:
+1. "make the NBA Playoffs" — regex required "make the playoffs" but didn't allow league name between "the" and "playoffs"
+2. "Heisman Trophy winner 2026" — "X winner" patterns didn't handle "Trophy" between award name and "winner"
+3. "Win the NFC" — conference/division pattern required "conference" or "division" suffix after abbreviation
+
+**Fixes:**
+- `detectSportsMarketType()` regex patterns updated:
+  - Season-level: `make\s+(the\s+)?(\w+\s+)?(?:playoffs?|...)` — allows optional league name
+  - Conference: `(?:afc|nfc|...)\s*(?:conference|division)?` — abbreviation alone is sufficient
+  - Winner suffix: Added `heisman(?:\s+trophy)?` and new catch-all pattern for "X winner" phrasing
+- 15 new unit tests (`sports-edge-market-type.test.ts`) covering FUTURES, MATCH, UNKNOWN, and edge cases
+
+**Audit of other DOMEX agents for similar time-horizon mismatches:**
+
+| Agent | Risk | Issue |
+|-------|------|-------|
+| **CRYPTO-ALPHA** | HIGH | Feeds intraday Binance data (1m prices, perpetual funding rates) to markets closing months away. Funding rate sentiment is intraday leverage, not predictive of long-term direction. |
+| **WEATHER-HAWK** | HIGH | Fetches 7-day NWS forecast but sets `nwsForecastAvailable: true` even for markets 30-180 days out. The 7-day data is irrelevant to seasonal/climate questions. |
+| **FED-HAWK** | MEDIUM | FedWatch provides meeting-specific rate probabilities. "Will Fed cut in 2026?" could confuse next-meeting probability with any-meeting-this-year probability. |
+| **GEO-INTEL** | MEDIUM | Polling snapshots and bill status don't adjust for market horizon. Current bill stage has different predictive power at 3 months vs 4 years. |
+| **CORPORATE-INTEL** | MEDIUM | 90-day earnings calendar fed to potentially multi-year markets without horizon check. |
+| **LEGAL-EAGLE** | LOW | Court opinions are largely time-horizon-agnostic. |
+| **SPORTS-EDGE** | FIXED | MATCH vs FUTURES detection with conservative null-return. ✅ |
+
+### V2.47 Position Signal Invalidation + Edge Ranking Pagination (2026-03-29)
+
+**Position Re-evaluation / Signal Invalidation:**
+
+Positions created from signals that are later found invalid (e.g., SPORTS-EDGE game-line data applied to futures markets) can sit in the portfolio indefinitely. New logic in `position-sync.ts` detects these:
+
+- During each 5-minute reconciliation cycle, open positions older than 24h are checked
+- If no Edge record exists for the market in the last 48h → position flagged `needsReview = true` with reason "Signal lost: no edge produced for this market in 48h"
+- If the latest Edge exists but `isActionable = false` → flagged with "Edge no longer actionable"
+- Positions are NOT auto-closed — only flagged for manual review (may still be profitable)
+- Dashboard Backtest page shows flagged positions with yellow warning icon and review reason tooltip
+- Leverages existing `needsReview` / `reviewReason` fields on `PaperPosition` schema
+
+**Edge Ranking Pagination:**
+
+The `/edges` API previously returned max 50 results. Now supports full pagination:
+- New query params: `page` (default 1), `limit` renamed to `pageSize` semantics (default 50, max 100)
+- Response includes: `{ data: [...], total: number, page: number, pageSize: number }`
+- Dashboard shows "Showing X-Y of Z" with Prev/Next page controls
+- Filters (platform, category, minEV, sort) reset page to 1 when changed
+- Full edge distribution now visible (375+ edges navigable vs previous 50 cap)
+
+### V2.48 Signal Merging + ALTEX Short-Bracket Skip (2026-03-29)
+
+**Pre-existing Signal Merging:**
+
+The research pipeline (15-min cycle) previously only fused signals generated in the current cycle. SPEEDEX/FLOWEX signals from the speed pipeline (30s cycle) existed in the DB but were never included in research edge fusion, meaning crypto brackets with fresh SPEEDEX data still failed the "2+ modules" gate.
+
+Fix: `mergePreExistingSignals()` in `signal-pipeline.job.ts` queries the DB for recent non-expired signals before CORTEX synthesis. Deduplication: if the current cycle produced a fresh COGEX signal AND there's a DB COGEX signal, the fresh one takes priority (DB query uses `moduleId NOT IN freshModuleIds`). Signal TTLs respected via `expiresAt > now`.
+
+Expected impact: Crypto bracket markets with SPEEDEX data from the speed pipeline can now pass the "2+ modules" gate when combined with a COGEX/DOMEX signal from the research pipeline.
+
+**ALTEX Short-Bracket Skip:**
+
+ALTEX (LLM news analysis) always returned null on short-duration crypto brackets — there's no news that shifts a 5-minute or 2-hour price bracket. Added skip rule:
+- `ALTEX` skipped when: market is a bracket AND `closesAt` <= 24 hours from now
+- ALTEX still runs on: all non-bracket markets, all bracket markets closing > 24h out, all non-crypto categories
+- `shouldSkipModule()` now accepts optional `closesAt` parameter for time-aware skip rules
+- Saves ~1 LLM call per short bracket market per cycle
+
+### Fix: EV Threshold Regression (2026-03-29)
+
+**Problem:** After the two-phase pipeline rewrite (fewer LLM modules per market), the pipeline produced 0 actionable edges overnight despite finding edges. Root cause: the EV threshold formula `netEdge × confidence >= 3%` double-penalized — fees were deducted from edgeMagnitude first (netEdge), then the already-fee-adjusted edge was multiplied by confidence (which was lower due to the coverage penalty from fewer modules), then checked against a 3% threshold that was originally calibrated to cover fees. With 2-module operation (confidence ~0.35), reaching 3% EV required ~10%+ raw edges — unrealistic for efficient markets.
+
+**Fix:**
+1. Gate on `netEdge >= threshold` directly instead of `netEdge × confidence >= threshold`. Since fees are already deducted, the threshold is pure profit margin. Confidence is gated independently at ≥20%.
+2. Lowered `EDGE_ACTIONABILITY_THRESHOLD` from 3% to 1.5% to reflect that fees are already subtracted — 1.5 cents per contract minimum profit margin after fees.
+3. `expectedValue = netEdge × confidence` still computed for ranking/display but no longer used in the actionability gate.
+
+**Impact:** Pipeline immediately began producing actionable edges again (1 edge, 1 paper trade in first cycle after fix). The four-gate system (net edge, confidence, module count, LLM module) remains intact.
+
+**Data collection phase (2026-03-29):** Threshold further lowered to 0.5% (`PAPER_EDGE_THRESHOLD = 0.005`) for paper trading mode to increase trade volume for FeatureModel training (needs 50+ resolved markets with labeled outcomes). Added dual-threshold constants: `PAPER_EDGE_THRESHOLD = 0.005` and `LIVE_EDGE_THRESHOLD = 0.015`. `EDGE_ACTIONABILITY_THRESHOLD` set to `PAPER_EDGE_THRESHOLD` — must be switched to `LIVE_EDGE_THRESHOLD` before live trading. Confidence floor (20%), 2+ module requirement, and LLM module requirement unchanged. Polymarket threshold also lowered to 0.5% for data collection.
+
+### Fix: Kalshi Ticker Date Parsing Bug — Wrong Date in Display Names (2026-03-29)
+
+**Problem:** Dashboard showed "BTC $67,125-$67,625 MAR 26 5PM" for a market that actually closes on March 29. The user interpreted this as trading a stale/expired market.
+
+**Root cause:** `buildPositionDisplayName()` in `paper-trader.ts` parsed the Kalshi ticker date incorrectly. Kalshi tickers use format `YY`+`MON`+`DD`+`HH` (e.g., `KXBTC-26MAR2917-B67125` = year 2026, March 29, 17:00). The regex captured group 1 (`26`, the year) as the day, producing "MAR 26" instead of "MAR 29".
+
+**Fix:** Updated destructuring from `const [, day, month, , hour]` to `const [, , month, day, hour]` — skipping group 1 (year) and using group 3 as the day.
+
+**Data quality verified:** No actual date mismatches exist in the DB. All `closesAt` values are correct (stored in UTC). Markets with late-evening EDT close times (≥8PM) show a +1 day difference between title (EDT) and closesAt (UTC) — this is correct timezone behavior, not a data bug. No ingestion fix needed.
+
+### Fix: Paper Position Sizing — Kelly Fractions Stored Instead of Contracts (2026-03-29)
+
+**Problem:** Paper portfolio showed $0.60 total deployed across 15 positions (~$0.04 average). P&L was in fractions of a cent. Positions were meaningless for paper trading validation.
+
+**Root cause:** CORTEX outputs `kellySize` as a bankroll fraction (e.g., 0.06 = 6% of bankroll). `enterPaperPosition()` stored this fraction directly in the DB. P&L formula `priceChange × kellySize` and notional formula `kellySize × entryPrice` are correct when kellySize is in **contracts**, but produce ~3000x-too-small values when kellySize is a fraction (0.06 instead of 181 contracts).
+
+**Fix:**
+1. In `enterPaperPosition()`, convert fraction to contracts: `contracts = max(5, round(kellyFraction × $1000 / pricePaid))` where `PAPER_BANKROLL = $1000` and `MIN_PAPER_CONTRACTS = 5`.
+2. Store contract count (not fraction) in `kellySize` field. All downstream formulas (P&L, notional, concentration) already use the correct `contracts × price` math.
+3. Migrated existing 20 positions from fractions to contracts via SQL: `kellySize = max(5, round(kellySize × 1000 / entryPrice))`.
+
+**Result:** Portfolio now shows $1,358 deployed, P&L ranges from -$90 to +$36 per position. Positions are 46-593 contracts ($29-$135 notional) — realistic for a $1,000 paper account with quarter-Kelly sizing.
+
+### Portfolio P&L Summary on Dashboard (2026-03-29)
+
+Added prominent P&L summary to the Live Paper Performance section on the Backtest page.
+
+**API additions** (`GET /backtest/live-performance`):
+- `realizedPnl`: sum of P&L from all closed positions
+- `unrealizedPnl`: sum of P&L from all open positions
+- `totalPnl`: realized + unrealized combined
+- `wins` / `losses`: count from closed positions (by P&L sign)
+- `winRate`: wins / (wins + losses)
+- `totalDeployed`: notional value of open positions (contracts × entryPrice)
+
+**Dashboard** (`Backtest.tsx`):
+- P&L summary bar above stat cards: Total P&L (large, color-coded), Realized, Unrealized, Win/Loss record with percentage, Total Deployed
+- P&L column in positions table now shows dollars (was showing cents from pre-sizing-fix era)
+- Review status tooltip shows the specific review reason on hover
+
+### REFLEX / DOMEX Status Verification (2026-03-29)
+
+**REFLEX:** Confirmed fully disabled — 0 new signals since V3 review changes. The Cornyn position's REFLEX signal (Mar 28) predates the disable and will not recur. REFLEX is: import commented out, weight=0, excluded from LLM_MODULES.
+
+**DOMEX FeatureModel:** The Cornyn market is POLITICS category — DOMEX uses an LLM agent (GEO_INTEL), not the FeatureModel. The 54.4% probability is the LLM's genuine analysis, not a FeatureModel bias. The FeatureModel untrained-safety-check (`sampleSize < 30 → return marketPrice`) is confirmed working and applies only to SPORTS markets where the FeatureModel is used.
+
+### "Review" Flag Documentation (2026-03-29)
+
+The `needsReview` flag on paper positions is triggered by four conditions:
+1. **Stale position** (paper-trader.ts): Open >14 days with <10% of edge captured in price movement
+2. **No convergence** (position-sync.ts): Open >14 days, price not moving toward fair value
+3. **Signal lost** (position-sync.ts): Open >24h, no edge produced for this market in 48h
+4. **Edge degraded** (position-sync.ts): Open >24h, latest edge exists but is no longer actionable
+
+Dashboard shows `⚠ Review` in yellow with a tooltip containing the specific reason.
+
+### Signal Module Implementation Status (2026-03-29)
+
+| Module | Implementation | Data Source | Schedule | Notes |
+|--------|---------------|-------------|----------|-------|
+| COGEX | ✅ Complete | Price snapshots (DB) | Every 15m (research) + 30s (speed) | Quantitative — no LLM |
+| FLOWEX | ✅ Complete | Order book snapshots (DB) | Every 15m (research) + 30s (speed) | Quantitative — no LLM |
+| SPEEDEX | ✅ Complete | Binance WS + Kalshi prices | Streaming (speed-worker) + 30s (speed) | Crypto bracket latency detection |
+| ARBEX | ✅ Complete | Market prices (DB) | Every 60s (arb-scan queue) | Intra + cross-platform arb detection |
+| DOMEX | ✅ Complete | Fuku sports API + LLM agents | Every 15m (research) | Sports via Fuku ($0), non-sports via Claude |
+| LEGEX | ✅ Complete | LLM (Claude) | Every 15m (research) | Skips bracket markets — no resolution ambiguity to analyze |
+| ALTEX | ✅ Complete | LLM (Claude) | Every 15m (research) | Skips short-duration brackets (< 24h) |
+| SIGINT | ✅ Complete | Polymarket wallet data (DB) | Every 1h (analysis queue) | Wallet indexer + smart money divergence |
+| NEXUS | ✅ Complete | LLM (Claude) + price history | Every 6h (analysis queue) | Causal graph + correlation matrix + consistency check |
+| REFLEX | ✅ Complete, DISABLED | LLM (Claude) | N/A | Disabled — V3 review Grade D, unfalsifiable LLM analysis |
+
+### LLM Budget Allocation — Merit-Based (2026-03-29)
+
+Phase 2 LLM budget is allocated purely by Phase 1 screening score. The top N non-sports candidates get LLM analysis regardless of market type. Module skip rules (LEGEX skips brackets, ALTEX skips short-duration brackets) handle per-module relevance — the budget system doesn't need to duplicate that logic. If all top-50 candidates are crypto brackets, that's correct — they earned it via edge signal strength.
+
+### Portfolio Page — Paper Position Display (2026-03-29)
+
+**Problem:** Portfolio page showed "No positions yet" because `/portfolio/positions` queried the `Position` table (LIVE trading mode). APEX is in paper mode with 20+ paper positions in `PaperPosition` table.
+
+**Fix:** `GET /portfolio/positions` now falls back to `PaperPosition` when no live positions exist. Returns `mode: 'PAPER'` or `mode: 'LIVE'` so the frontend can display a mode indicator. Summary stats (deployed, P&L, open positions, total value) computed from paper positions when no live positions exist.
+
+### Targeted Resolution Sync (2026-03-29)
+
+**Problem:** Resolution sync ran but missed markets APEX holds positions on. The `fetchResolvedCryptoMarkets()` function queries closed events with a 3-page limit (30 events per crypto series), but Kalshi generates 24+ events per day per series. Markets from 2+ days ago are too deep in pagination to reach.
+
+**Fix:** Added `syncPositionResolutions()` which:
+1. Finds paper positions whose market `closesAt` is in the past and `resolution` is null
+2. Directly queries each market ticker via `GET /markets/{ticker}` (new `fetchMarketByTicker()` in kalshi-client.ts)
+3. If the market has a `result` field, upserts the resolution into the DB
+4. Runs after the broad sweep in every 5-minute market-sync cycle
+
+This ensures position markets always get their resolution, regardless of pagination depth. The `POST /system/trigger-resolution-sync` route also calls this function for manual backfills.
+
+**Results:** 6 expired position markets resolved on first run. Backtest page now shows `resolvedPositions: 6`, `hitRate: 33%` (2/6 correct direction predictions).
+
+### Pipeline Category Focus — Data Collection Phase (2026-03-29)
+
+**Decision:** Focus the signal pipeline on CRYPTO + SPORTS markets only during the data collection phase. These categories have the highest liquidity, most frequent resolution, and best signal quality — fastest path to 50+ resolved markets for FeatureModel training.
+
+**Implementation:** Configurable via `APEX_ACTIVE_CATEGORIES` env var (comma-separated). Default: `CRYPTO,SPORTS`. Set to empty string or `*` to enable all categories. The filter is applied in `buildScanPool()` (market-scanner.ts) at the DB query level. No module code was removed — LEGEX, ALTEX, DOMEX agents for politics/legal/corporate remain intact and will activate when categories are re-enabled.
+
+**To re-enable all categories:** Set `APEX_ACTIVE_CATEGORIES=*` in `.env` and restart workers.
+
+### SPEEDEX in CORTEX Fusion + CRYPTO LLM Gate Bypass (2026-03-29)
+
+**Problem:** SPEEDEX found 80%+ edges on ATM crypto brackets but no trades were created. Three blocking issues:
+1. SPEEDEX was excluded from CORTEX probability fusion (filtered alongside ARBEX at cortex.ts:60-61)
+2. Even if included, crypto markets fail the "1+ LLM module" gate (no LLM analysis needed for Black-Scholes pricing)
+3. The apex-speed streaming worker wasn't started in pm2
+
+**Fix:**
+- Included SPEEDEX in probability fusion (only ARBEX excluded — it produces arb spreads, not probability)
+- CRYPTO markets with a SPEEDEX signal bypass the LLM module requirement — `hasLLMModule = true` when `marketCategory === 'CRYPTO' && hasSpeedex`
+- Started apex-speed worker: monitors 35+ brackets across BTC/ETH/SOL/XRP via Binance WebSocket
+- Speed pipeline signals persist to DB → research pipeline merges via `mergePreExistingSignals()` → CORTEX fusion now includes SPEEDEX → 2-module gate passes (SPEEDEX + COGEX)
+
+### Crypto Page Detail View (2026-03-29)
+
+`GET /crypto/markets/:id/detail` returns:
+- Pricing analysis: spot, strike, implied prob, raw edge, edge after fees, direction
+- All module signals (SPEEDEX, COGEX, FLOWEX, DOMEX, etc.) with probability, confidence, reasoning
+- CORTEX edge: composite probability, edge magnitude, direction, confidence, EV, actionability
+- Paper positions: entry, current, P&L, open/closed status
+
+Dashboard: clicking any row on the Crypto page expands an inline detail panel with three columns (Pricing Analysis, Module Signals, CORTEX Edge + Positions).
+
+### SPEED Fast Trade Path (2026-03-29)
+
+**Problem:** SPEEDEX signals had 5-minute expiry but the research pipeline runs every 15 minutes. By the time the pipeline processed a SPEEDEX signal, it had already expired. Crypto bracket edges are time-sensitive — a 15-minute delay makes them worthless.
+
+**Solution:** The apex-speed streaming worker now has its own fast execution path that runs the full CORTEX → TradingService pipeline in real-time:
+
+1. SPEEDEX detects edge >= 10% (configurable via `FAST_PATH_MIN_EDGE`)
+2. Edge must persist 10 seconds (avoids noise)
+3. Duplicate check: skip if open position already exists on this market
+4. Cooldown: max 1 trade per market per 15 minutes
+5. Build SPEEDEX signal + merge recent COGEX/FLOWEX signals from DB
+6. CORTEX synthesis (same fusion engine as research pipeline)
+7. Persist edge + training snapshot
+8. TradingService.executeEdge() with all 10 preflight gates
+9. Paper trade created if all gates pass
+
+**Dual execution paths:**
+- **Fast path** (apex-speed): real-time, event-driven, crypto brackets only, triggered by SPEEDEX edge >= 10%
+- **Research path** (apex-worker): 15-min cycle, all categories, full LLM suite, triggered by Phase 1 screening score
+
+Both paths use the same CORTEX synthesis and TradingService — just different triggers and latency.
+
+### Trade Volume Unlocks (2026-03-29)
+
+**SPEEDEX solo override:** When SPEEDEX edge >= 15% and confidence >= 40%, the 2-module gate is bypassed. Black-Scholes on crypto brackets is mathematically rigorous — requiring LLM confirmation on a pricing model result is counterproductive. Solo trades are logged as `SPEEDEX_SOLO`.
+
+**Pipeline frequency:** Signal pipeline reduced from 15-min to 5-min cycles (`JOB_SCHEDULES.SIGNAL_PIPELINE`). Crypto bracket edges expire in 5 minutes — 15-min processing missed them entirely.
+
+**Gate 10 relaxation:** Bracket conflict gate (Gate 10) is warn-only in paper mode (`ctx.paperMode`). Live mode still blocks -EV bracket groups. Paper mode allows bracket exploration for training data collection.
+
+### CRITICAL P&L Bug Diagnosis (2026-03-29)
+
+**Symptom:** Dashboard shows -$490 P&L with 19% win rate despite 76.7% hit rate (direction accuracy). APEX correctly predicts bracket outcomes 33/43 times but the P&L shows massive losses.
+
+**Root Cause — Three compounding bugs in P&L calculation:**
+
+1. **Resolution P&L missing kellySize** (`position-sync.ts:72`): `pnl = won ? (1 - entryPrice) : -entryPrice` calculates per-contract P&L but never multiplies by `kellySize` (contract count). A position with 2,060 contracts that won 81.8¢ per contract shows P&L of $0.18 instead of $1,685.
+
+2. **Expired path uses stale market price** (`position-sync.ts:100`): Most positions close via the `expired` path (market expires before resolution sync runs). This path calculates P&L as `(entryPrice - lastYesPrice) * kellySize`, using the last observed YES price instead of the resolution outcome (0 or 1). For BUY_NO positions, when the YES price moves up near expiry, the mark-to-market shows a loss — even though the NO outcome wins at settlement.
+
+3. **Timing: expired before resolved**: The paper-trader auto-closes positions when `closesAt < now` (expired path), but the resolution sync runs on the next 5-minute market-sync cycle. By the time resolution data arrives, the position is already closed with the wrong P&L.
+
+**Impact:** Stored P&L = -$490. Correct P&L (using resolution outcomes) = +$14,362. Difference = **$14,852** of miscounted profit.
+
+**The edges and hit rate are real.** SPEEDEX Black-Scholes pricing works. 76.7% directional accuracy on 43 resolved bracket positions.
+
+### P&L Bug Fix + Historical Recomputation (2026-03-29) — RESOLVED
+
+**Fixes applied:**
+1. Resolution P&L now multiplies by `kellySize` (contract count) — `position-sync.ts:72-86`
+2. 30-minute grace period before expired close in both `position-sync.ts` and `paper-trader.ts` — lets resolution sync deliver the actual outcome before the stale-price fallback kicks in
+3. Resolution path now correctly handles BUY_YES and BUY_NO with proper settlement math
+
+**Historical recomputation:** `scripts/recompute-pnl.ts` recalculated all 43 resolved positions:
+- **Old P&L: -$485 → Corrected P&L: +$14,366**
+- **Win rate: 76.7%** (33W / 10L)
+- **BUY_NO: 28/29 wins, +$14,081** — SPEEDEX bracket pricing is highly accurate
+- **BUY_YES: 5/14 wins, +$420** — lower accuracy on YES-side trades
+- All position records updated in database with correct P&L, closeReason='RESOLVED', and settlement prices
+
+### Directional Distribution Analysis (2026-03-29) — Not a Bug
+
+Actual trade distribution is 40% BUY_YES / 60% BUY_NO. This is correct market structure behavior:
+
+- Kalshi has ~50 bracket markets per asset per expiry, but only 1-2 contain the current spot price
+- OTM brackets (spot outside range) have near-zero fair value but Kalshi prices them at 5-80¢ due to stale market-making → massive BUY_NO edges
+- ATM brackets (spot inside range) produce balanced YES/NO edges
+- The 60/40 NO/YES split in trades reflects the available edge distribution, not a code bias
+- CORTEX direction logic, SPEEDEX solo override, and edge calculation are all symmetric and verified correct
+
+### Deribit Data Source — Implied Volatility (2026-03-29)
+
+**Purpose:** Provide forward-looking implied volatility (DVOL) from Deribit — crypto's VIX. Currently SPEEDEX uses a default 57% annualized vol or short-window realized vol from Coinbase ticks. Deribit DVOL represents the options market's consensus 30-day forward vol — a far better input for Black-Scholes bracket pricing.
+
+**Implementation:** `apps/api/src/services/data-sources/deribit.ts` — REST polling with in-memory TTL cache:
+- DVOL index: 60s cache, via `GET /public/get_volatility_index_data` with `GET /public/ticker` fallback
+- Option book summary: 5-min cache, via `GET /public/get_book_summary_by_currency`
+- Historical vol: 1-hr cache, via `GET /public/get_historical_volatility`
+- ATM IV interpolation: derives term-structure from book summary
+- SOL: BTC DVOL × 1.8 beta proxy (no SOL options on Deribit)
+- Rate limited via Bottleneck (10 req/s). No auth needed.
+
+**Data flow:** Dashboard `/crypto/dashboard` → `volatility` field with BTC/ETH/SOL DVOL + expected daily move. System `/system/data-sources` → Deribit health status. Dashboard Crypto page shows DVOL cards.
+
+### VOL-REGIME: Dynamic Volatility for SPEEDEX (2026-03-29) — IMPLEMENTED
+
+**What changed:** SPEEDEX's volatility input upgraded from "57% constant or 5-minute realized vol" to a Deribit-powered regime-aware estimator. Zero LLM cost.
+
+**Volatility estimator** (`apps/api/src/services/volatility-estimator.ts`):
+- Primary: Deribit DVOL (30-day forward-looking implied vol)
+- Secondary: Coinbase 5-min realized vol (fallback + regime detection)
+- Fallback: 57% default (only when both Deribit and Coinbase are down)
+- Cached with 30s TTL, fetched asynchronously, consumed synchronously by speed-worker hot path
+
+**Regime detection** (using relationship between realized vol and DVOL):
+| Regime | Condition | Adjustment | Confidence |
+|--------|-----------|-----------|------------|
+| COMPRESSED | rv5m < 0.5×DVOL | +20% buffer (breakout risk) | 0.6 |
+| EXPANDING | rv5m > 1.5×DVOL | Use max(DVOL, rv5m) | 0.7 |
+| EXHAUSTION | Was expanding, rv5m declining 3+ readings | 0.85×DVOL | 0.8 |
+| NORMAL | Default | Use DVOL directly | 0.9 |
+
+**Integration points:**
+- `speed-worker.ts`: Vol estimates pre-cached every 30s, used in `onPriceTick` hot path
+- `speedex.ts`: Async vol fetch per market in batch SPEEDEX module. Confidence modulated by vol quality.
+- SPEEDEX signal reasoning includes: `vol=54.4% DERIBIT, NORMAL`
+- Dashboard DVOL cards show regime badge + variance premium (IV - RV)

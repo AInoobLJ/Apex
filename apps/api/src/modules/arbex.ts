@@ -37,13 +37,19 @@ const MIN_CROSS_PLATFORM_SIMILARITY = 0.80; // Only arb markets with 80%+ title 
 export async function runArbScan(): Promise<ArbOpportunity[]> {
   const opportunities: ArbOpportunity[] = [];
 
-  // Fetch all active markets with contracts
+  // Fetch all active markets with contracts (must still be open)
+  const now = new Date();
   const markets = await prisma.market.findMany({
-    where: { status: 'ACTIVE' },
+    where: {
+      status: 'ACTIVE',
+      closesAt: { gt: now },
+    },
     include: {
       contracts: true,
     },
   });
+
+  logger.debug({ marketCount: markets.length }, 'ARBEX: fetched active non-expired markets');
 
   // 1. Intra-platform arb scan
   const intraArbs = scanIntraPlatformArbs(markets);

@@ -261,4 +261,5 @@ function toNum(val: unknown, fallback: number): number {
   return fallback;
 }
 
-export const domexModule = new DomexModule();
+import { ClaudeLLMProvider } from '../providers/claude-llm-provider';
+export const domexModule = new DomexModule({ llmProvider: new ClaudeLLMProvider() });

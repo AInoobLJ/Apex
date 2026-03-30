@@ -69,7 +69,7 @@ export class AltexModule extends SignalModule {
       }>({
         task: 'ALTEX_ANALYSIS',
         systemPrompt: 'You assess whether recent news or developments may have shifted the probability of a prediction market outcome. IMPORTANT: Base analysis on the CURRENT date provided, not historical events from training data. Respond with JSON: {"hasRecentNews": boolean, "probabilityShift": number (-0.30 to 0.30), "direction": "TOWARD_YES | TOWARD_NO", "likelyPricedIn": number (0-1), "reasoning": "string"}',
-        userMessage: (() => { const { getDateContext, getMarketDateContext } = require('../lib/date-context'); return `${getDateContext()}\n${getMarketDateContext(market.closesAt)}\n\nMarket: ${market.title}\nCategory: ${market.category}\nCurrent YES price: ${(marketPrice * 100).toFixed(1)}%\nDescription: ${(market.description || '').slice(0, 400)}\n\nBased on the CURRENT state of affairs as of the date above, has anything happened that would shift this market's probability? If so, how much and in which direction?`; })(),
+        userMessage: (() => { const { getDateContext, getMarketDateContext } = require('../lib/date-context'); return `${getDateContext()}\n${getMarketDateContext(market.closesAt)}\n\nMarket: ${market.title}\nCategory: ${market.category}\nDescription: ${(market.description || '').slice(0, 400)}\n\nBased on the CURRENT state of affairs as of the date above, has anything happened that would shift this market's probability? If so, how much and in which direction?`; })(),
       });
 
       const analysis = result.parsed;
@@ -163,7 +163,7 @@ export class AltexModule extends SignalModule {
     ).join('\n\n');
 
     const marketText = markets.slice(0, 20).map(m =>
-      `- [${m.id}] ${m.title} (${m.category}, YES=${(m.yesPrice * 100).toFixed(1)}%)`
+      `- [${m.id}] ${m.title} (${m.category})`
     ).join('\n');
 
     const { getDateContext } = require('../lib/date-context');
@@ -204,5 +204,6 @@ export class AltexModule extends SignalModule {
   }
 }
 
-export const altexModule = new AltexModule();
+import { ClaudeLLMProvider } from '../providers/claude-llm-provider';
+export const altexModule = new AltexModule({ llmProvider: new ClaudeLLMProvider() });
 export function createAltexModule(deps: ModuleDeps) { return new AltexModule(deps); }

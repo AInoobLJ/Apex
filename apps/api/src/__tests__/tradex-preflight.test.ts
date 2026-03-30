@@ -16,6 +16,16 @@ function mockExecutor(balance: { available: number; deployed: number }): BaseExe
   } as BaseExecutor;
 }
 
+// Explicit test limits — do NOT rely on DEFAULT_RISK_LIMITS which may change.
+// Tests validate gate logic, not specific production limit values.
+const TEST_LIMITS = {
+  ...DEFAULT_RISK_LIMITS,
+  maxPerTrade: 10,
+  maxDailyNewTrades: 30,
+  maxSimultaneousPositions: 5,
+  maxTotalDeployed: 100,
+};
+
 function makeContext(overrides: Partial<Omit<PreflightContext, 'executor'>> & { balance?: { available: number; deployed: number } }): PreflightContext {
   const { balance, ...rest } = overrides;
   return {
@@ -25,7 +35,7 @@ function makeContext(overrides: Partial<Omit<PreflightContext, 'executor'>> & { 
     graduated: true,
     dailyNewTradeVolume: 0,
     openPositionCount: 0,
-    limits: { ...DEFAULT_RISK_LIMITS },
+    limits: { ...TEST_LIMITS },
     executor: mockExecutor(balance ?? { available: 100, deployed: 0 }),
     ...rest,
   };

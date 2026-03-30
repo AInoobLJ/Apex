@@ -1,23 +1,30 @@
-import { Platform } from '@apex/db';
+/**
+ * Fee calculator — re-exports from @apex/shared canonical fee module.
+ * All fee logic lives in packages/shared/src/fees.ts.
+ */
+import { kalshiFee, polymarketFee, kalshiFeePerContract } from '@apex/shared';
+import type { Platform } from '@apex/shared';
+
+export { kalshiFee, polymarketFee };
 
 /**
- * Kalshi fee: ceil(0.07 × contracts × price × (1 - price))
- * Applied per side (buy or sell), capped at contract value.
+ * Legacy alias: calculateKalshiFee(price, contracts)
+ * Note: price here is the price you pay for the contract (pricePaid).
  */
 export function calculateKalshiFee(price: number, contracts: number): number {
-  if (price <= 0 || price >= 1) return 0;
-  return Math.ceil(0.07 * contracts * price * (1 - price) * 100) / 100;
+  return kalshiFee(price, contracts);
 }
 
 /**
- * Polymarket: generally 0 fees for most markets (fees on withdrawal only).
+ * Legacy alias: calculatePolymarketFee(price, contracts)
  */
-export function calculatePolymarketFee(_price: number, _contracts: number): number {
-  return 0;
+export function calculatePolymarketFee(price: number, contracts: number): number {
+  return polymarketFee(price, contracts);
 }
 
 /**
  * Calculate net arbitrage profit from buying YES on one platform and NO on another.
+ * For arbs: YES buyer pays yesPrice, NO buyer pays noPrice = (1 - yesPrice on that market).
  */
 export function calculateNetArb(
   yesPrice: number,
@@ -28,13 +35,15 @@ export function calculateNetArb(
 ): { netProfit: number; grossSpread: number; totalFees: number } {
   const grossSpread = 1 - yesPrice - noPrice;
 
+  // YES buyer pays yesPrice → fee based on (1 - yesPrice) potential profit
   const yesFee = yesPlatform === 'KALSHI'
-    ? calculateKalshiFee(yesPrice, contracts)
-    : calculatePolymarketFee(yesPrice, contracts);
+    ? kalshiFee(yesPrice, contracts)
+    : polymarketFee(yesPrice, contracts);
 
+  // NO buyer pays noPrice → fee based on (1 - noPrice) potential profit
   const noFee = noPlatform === 'KALSHI'
-    ? calculateKalshiFee(noPrice, contracts)
-    : calculatePolymarketFee(noPrice, contracts);
+    ? kalshiFee(noPrice, contracts)
+    : polymarketFee(noPrice, contracts);
 
   const totalFees = yesFee + noFee;
   const netProfit = (grossSpread * contracts) - totalFees;

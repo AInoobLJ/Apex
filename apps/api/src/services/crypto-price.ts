@@ -13,10 +13,6 @@ const COINGECKO_IDS: Record<string, string> = {
   BTC: 'bitcoin',
   ETH: 'ethereum',
   SOL: 'solana',
-  XRP: 'ripple',
-  DOGE: 'dogecoin',
-  BNB: 'binancecoin',
-  HYPE: 'hyperliquid',
 };
 
 // Cache prices for 30 seconds (good enough for strike comparison, saves API calls)
@@ -149,6 +145,17 @@ function normalCDF(x: number): number {
   return 0.5 * (1.0 + sign * y);
 }
 
+// Default hourly realized vol: 0.6% (annualized ~57%, daily ~3%)
+const DEFAULT_HOURLY_VOL = 0.006;
+
+/**
+ * Convert annualized volatility to hourly volatility.
+ * annualized = hourly * sqrt(8760)
+ */
+export function annualizedToHourly(annualizedVol: number): number {
+  return annualizedVol / Math.sqrt(8760);
+}
+
 /**
  * Calculate implied probability from spot price vs strike for a crypto range contract.
  *
@@ -156,14 +163,14 @@ function normalCDF(x: number): number {
  *   d = ln(spot/strike) / (vol * sqrt(T))
  *   P(above strike at expiry) = N(d)
  *
- * Key insight: for near-expiry contracts (< 1 hour), even a small buffer
- * like $150 on BTC ($71K) is NOT 100% — BTC can move $500 in minutes.
- * The volatility and time remaining determine the real probability.
+ * @param volatility - Optional: annualized volatility from real-time data.
+ *   If provided, overrides the default 0.6% hourly assumption.
  */
 export function calculateSpotImpliedProb(
   spotPrice: number,
   strike: number,
-  hoursToResolution: number
+  hoursToResolution: number,
+  volatility?: number,
 ): number {
   // Already expired
   if (hoursToResolution <= 0) return spotPrice >= strike ? 1 : 0;
@@ -171,12 +178,10 @@ export function calculateSpotImpliedProb(
   // Minimum time horizon to avoid division by near-zero
   const effectiveHours = Math.max(hoursToResolution, 1 / 60); // at least 1 minute
 
-  // BTC hourly realized vol ≈ 0.6% (annualized ~57%, daily ~3%)
-  // For short timeframes, vol is slightly higher due to microstructure noise
-  const baseHourlyVol = 0.006; // 0.6% per hour
+  const hourlyVol = volatility ? annualizedToHourly(volatility) : DEFAULT_HOURLY_VOL;
 
   // Scale vol by sqrt(time) for the relevant window
-  const sigma = baseHourlyVol * Math.sqrt(effectiveHours);
+  const sigma = hourlyVol * Math.sqrt(effectiveHours);
 
   // d1 from Black-Scholes (no risk-free rate for short durations)
   const d = Math.log(spotPrice / strike) / sigma;
@@ -190,31 +195,57 @@ export function calculateSpotImpliedProb(
 
 /**
  * Calculate implied probability for a BRACKET contract.
- * "Will BTC be between $69,000 and $69,250 at resolution?"
+ * "Will BTC be between $69,000 and $69,500 at resolution?"
  *
  * P(bracket) = N(d_upper) - N(d_lower)
  *   where d = ln(spot/strike) / (vol * sqrt(T))
  *
- * For a $250 bracket on BTC (~$70K), the bracket width is ~0.36% of price.
- * With hourly vol of 0.6%, a bracket centered on spot has ~30% probability at 1 hour.
- * Off-center brackets drop off rapidly.
+ * @param volatility - Optional: annualized volatility from real-time data.
+ *   If provided, overrides the default hourly vol assumption.
+ *
+ * Short-expiry handling:
+ * - < 5 min: price position relative to bracket dominates. If inside, high prob; if outside, low.
+ * - < 30 min: blend of momentum + bracket position
+ * - Normal: standard log-normal model
  */
 export function calculateBracketImpliedProb(
   spotPrice: number,
   bracketLow: number,
   bracketWidth: number,
-  hoursToResolution: number
+  hoursToResolution: number,
+  volatility?: number,
 ): number {
+  const bracketHigh = bracketLow + bracketWidth;
+
   if (hoursToResolution <= 0) {
     // Already resolved: spot in bracket = 1, else 0
-    return (spotPrice >= bracketLow && spotPrice < bracketLow + bracketWidth) ? 1 : 0;
+    return (spotPrice >= bracketLow && spotPrice < bracketHigh) ? 1 : 0;
+  }
+
+  const isInBracket = spotPrice >= bracketLow && spotPrice < bracketHigh;
+  const minutesToExpiry = hoursToResolution * 60;
+
+  // Very short expiry (< 5 min): mostly determined by current position
+  if (minutesToExpiry < 5) {
+    if (isInBracket) {
+      // Inside bracket: high probability, scales with how centered the price is
+      const center = bracketLow + bracketWidth / 2;
+      const distFromCenter = Math.abs(spotPrice - center) / (bracketWidth / 2);
+      // 0.85 if at center, 0.65 at bracket edge
+      return Math.max(0.60, 0.85 - 0.20 * distFromCenter);
+    } else {
+      // Outside bracket: low probability, scales with distance
+      const distFromEdge = spotPrice < bracketLow
+        ? (bracketLow - spotPrice) / spotPrice
+        : (spotPrice - bracketHigh) / spotPrice;
+      // Further away = less likely to re-enter
+      return Math.max(0.01, Math.min(0.15, 0.15 - distFromEdge * 100));
+    }
   }
 
   const effectiveHours = Math.max(hoursToResolution, 1 / 60);
-  const baseHourlyVol = 0.006;
-  const sigma = baseHourlyVol * Math.sqrt(effectiveHours);
-
-  const bracketHigh = bracketLow + bracketWidth;
+  const hourlyVol = volatility ? annualizedToHourly(volatility) : DEFAULT_HOURLY_VOL;
+  const sigma = hourlyVol * Math.sqrt(effectiveHours);
 
   // P(spot ends above bracketLow) - P(spot ends above bracketHigh)
   const dLow = Math.log(spotPrice / bracketLow) / sigma;
@@ -223,4 +254,19 @@ export function calculateBracketImpliedProb(
   const prob = normalCDF(dLow) - normalCDF(dHigh);
 
   return Math.max(0.001, Math.min(0.99, prob));
+}
+
+/**
+ * Calculate bracket probability with full context from real-time data.
+ * This is the primary entry point for the speed worker.
+ */
+export function calculateBracketProbability(
+  currentPrice: number,
+  lowerBound: number,
+  upperBound: number,
+  hoursToExpiry: number,
+  volatility: number,
+): number {
+  const bracketWidth = upperBound - lowerBound;
+  return calculateBracketImpliedProb(currentPrice, lowerBound, bracketWidth, hoursToExpiry, volatility);
 }

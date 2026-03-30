@@ -35,6 +35,8 @@ export interface EdgeOutput {
   isActionable: boolean;
   conflictFlag: boolean;
   timestamp: Date;
+  /** Market category for concentration checks */
+  marketCategory: string;
   /** Human-readable explanation of why this edge is/isn't actionable */
   actionabilitySummary?: string;
 }
@@ -182,17 +184,74 @@ export interface OrderBookResponse {
 
 export interface ListEdgesResponse {
   data: EdgeOutput[];
+  total?: number;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface ServiceCheck {
+  status: 'up' | 'down';
+  latencyMs: number;
+}
+
+export interface ExternalServiceCheck {
+  status: 'up' | 'down' | 'syncing' | 'unknown';
+  lastSuccessAt: string | null;
+}
+
+export interface ModuleHealth {
+  status: 'healthy' | 'stale' | 'inactive';
+  signalsLast24h: number;
+  lastActive: string | null;
+}
+
+export interface CircuitBreakerStatus {
+  state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+  failures: number;
+  totalFailures: number;
+  totalSuccesses: number;
+}
+
+export interface WorkerStatus {
+  status: 'up' | 'down' | 'idle';
+  activeJobs: number;
+  lastJobCompleted: string | null;
+  failedJobs24h: number;
 }
 
 export interface HealthResponse {
   status: 'healthy' | 'degraded' | 'unhealthy';
-  checks: {
-    postgres: { status: 'up' | 'down'; latencyMs: number };
-    redis: { status: 'up' | 'down'; latencyMs: number };
-    kalshi: { status: 'up' | 'down' | 'unknown'; lastSuccessAt: string | null };
-    polymarket: { status: 'up' | 'down' | 'unknown'; lastSuccessAt: string | null };
-  };
+  timestamp: string;
   uptime: number;
+  services: {
+    database: ServiceCheck;
+    redis: ServiceCheck;
+    worker: WorkerStatus;
+  };
+  platforms: {
+    kalshi: ExternalServiceCheck;
+    polymarket: ExternalServiceCheck;
+  };
+  modules: Record<string, ModuleHealth>;
+  circuitBreakers: Record<string, CircuitBreakerStatus>;
+  budget: {
+    dailySpent: number;
+    dailyLimit: number;
+    percentUsed: number;
+    hardLimit: number;
+  };
+  portfolio: {
+    paperPositions: number;
+    totalDeployed: number;
+    unrealizedPnl: number;
+  };
+  /** @deprecated Use services.database and services.redis instead */
+  checks: {
+    postgres: ServiceCheck;
+    redis: ServiceCheck;
+    kalshi: ExternalServiceCheck;
+    polymarket: ExternalServiceCheck;
+  };
 }
 
 export interface JobStatusResponse {

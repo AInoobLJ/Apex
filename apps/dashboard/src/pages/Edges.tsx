@@ -58,25 +58,34 @@ export function Edges() {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [platform, setPlatform] = useState('');
-  const [category, setCategory] = useState('');
+  const [category, setCategory] = useState('CRYPTO');
   const [sortBy, setSortBy] = useState('capitalEfficiency');
   const [minEV, setMinEV] = useState(0);
   const [hideExtreme, setHideExtreme] = useState(true);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const pageSize = 50;
   const debouncedMinEV = useDebounce(minEV, 300);
   const navigate = useNavigate();
 
   useEffect(() => {
     setLoading(true);
-    const query: Record<string, unknown> = { sort: sortBy, direction: 'desc', limit: 50 };
+    const query: Record<string, unknown> = { sort: sortBy, direction: 'desc', limit: pageSize, page };
     if (platform) query.platform = platform;
     if (category) query.category = category;
     if (debouncedMinEV > 0) query.minExpectedValue = (debouncedMinEV / 100).toString();
 
     api.listEdges(query)
-      .then(res => setEdges(res.data as unknown as EdgeRow[]))
+      .then(res => {
+        setEdges((res.data ?? []) as unknown as EdgeRow[]);
+        setTotal(res.total ?? 0);
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [platform, category, debouncedMinEV, sortBy]);
+  }, [platform, category, debouncedMinEV, sortBy, page]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => { setPage(1); }, [platform, category, debouncedMinEV, sortBy]);
 
   const filteredEdges = hideExtreme
     ? edges.filter(e => e.marketPrice >= 0.05 && e.marketPrice <= 0.95)
@@ -104,7 +113,11 @@ export function Edges() {
   return (
     <div>
       <h1 style={{ fontFamily: fonts.mono, fontSize: '20px', marginBottom: '16px' }}>
-        Edge Ranking <span style={{ color: colors.textMuted, fontSize: '14px' }}>({filteredEdges.length}{hideExtreme && filteredEdges.length !== edges.length ? ` / ${edges.length}` : ''})</span>
+        Edge Ranking <span style={{ color: colors.textMuted, fontSize: '14px' }}>
+          {total > 0
+            ? `(${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, total)} of ${total}${hideExtreme && filteredEdges.length !== edges.length ? `, ${filteredEdges.length} shown` : ''})`
+            : `(${filteredEdges.length})`}
+        </span>
       </h1>
 
       {/* Filter bar */}
@@ -138,6 +151,24 @@ export function Edges() {
 
       {loading ? <TableSkeleton rows={10} columns={11} /> : (
         <div>
+          {/* Pagination controls */}
+          {total > pageSize && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <span style={{ color: colors.textMuted, fontSize: '12px', fontFamily: fonts.mono }}>
+                Page {page} of {Math.ceil(total / pageSize)}
+              </span>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1}
+                  style={{ ...paginationBtnStyle, opacity: page <= 1 ? 0.3 : 1 }}>
+                  Prev
+                </button>
+                <button onClick={() => setPage(p => Math.min(Math.ceil(total / pageSize), p + 1))} disabled={page >= Math.ceil(total / pageSize)}
+                  style={{ ...paginationBtnStyle, opacity: page >= Math.ceil(total / pageSize) ? 0.3 : 1 }}>
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
           {/* Header */}
           <div style={{ display: 'grid', gridTemplateColumns: GRID, gap: '4px', padding: '8px 12px', borderBottom: `1px solid ${colors.border}`, fontSize: '10px', color: colors.textSecondary, textTransform: 'uppercase', fontWeight: 500 }}>
             <span></span><span>Platform</span><span>Market</span><span>Dir</span>
@@ -253,4 +284,15 @@ const selectStyle: React.CSSProperties = {
   fontSize: '13px',
   fontFamily: fonts.sans,
   outline: 'none',
+};
+
+const paginationBtnStyle: React.CSSProperties = {
+  backgroundColor: colors.bgTertiary,
+  border: `1px solid ${colors.border}`,
+  color: colors.text,
+  padding: '6px 16px',
+  borderRadius: '6px',
+  fontSize: '12px',
+  fontFamily: fonts.mono,
+  cursor: 'pointer',
 };
